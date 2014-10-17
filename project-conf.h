@@ -41,8 +41,8 @@
 
 /* Disabling RDC for demo purposes. Core updates often require more memory. */
 /* For projects, optimize memory and enable RDC again. */
-#undef NETSTACK_CONF_RDC
-#define NETSTACK_CONF_RDC     nullrdc_driver
+/*#undef NETSTACK_CONF_RDC
+#define NETSTACK_CONF_RDC     nullrdc_driver*/
 
 /* Disabling TCP on CoAP nodes. */
 #undef UIP_CONF_TCP
@@ -61,7 +61,7 @@
 /* The IP buffer size must fit all other hops, in particular the border router. */
 
 #undef UIP_CONF_BUFFER_SIZE
-#define UIP_CONF_BUFFER_SIZE    240
+#define UIP_CONF_BUFFER_SIZE    180
 
 
 /* Multiplies with chunk size, be aware of memory constraints. */
@@ -90,14 +90,14 @@
 /*#undef QUEUEBUF_CONF_NUM
 #define QUEUEBUF_CONF_NUM       4*/
 
-/*#undef SICSLOWPAN_CONF_FRAG
-#define SICSLOWPAN_CONF_FRAG	1*/
+#undef SICSLOWPAN_CONF_FRAG
+#define SICSLOWPAN_CONF_FRAG	1
 
-/*#ifndef QUEUEBUF_CONF_NUM
+#ifndef QUEUEBUF_CONF_NUM
 #define QUEUEBUF_CONF_NUM          4
 #endif
 
-#undef UIP_CONF_BUFFER_SIZE
+/*#undef UIP_CONF_BUFFER_SIZE
 #define UIP_CONF_BUFFER_SIZE    240
 
 #ifndef UIP_CONF_RECEIVE_WINDOW
