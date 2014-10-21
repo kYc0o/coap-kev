@@ -104,21 +104,25 @@
 #if DEBUG
 #define PRINTF(...) printf(__VA_ARGS__)
 #define PRINT6ADDR(addr) PRINTF("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]", ((uint8_t *)addr)[0], ((uint8_t *)addr)[1], ((uint8_t *)addr)[2], ((uint8_t *)addr)[3], ((uint8_t *)addr)[4], ((uint8_t *)addr)[5], ((uint8_t *)addr)[6], ((uint8_t *)addr)[7], ((uint8_t *)addr)[8], ((uint8_t *)addr)[9], ((uint8_t *)addr)[10], ((uint8_t *)addr)[11], ((uint8_t *)addr)[12], ((uint8_t *)addr)[13], ((uint8_t *)addr)[14], ((uint8_t *)addr)[15])
+#define SPRINT6ADDR(buffer, addr) sprintf(buffer, "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", ((uint8_t *)addr)[0], ((uint8_t *)addr)[1], ((uint8_t *)addr)[2], ((uint8_t *)addr)[3], ((uint8_t *)addr)[4], ((uint8_t *)addr)[5], ((uint8_t *)addr)[6], ((uint8_t *)addr)[7], ((uint8_t *)addr)[8], ((uint8_t *)addr)[9], ((uint8_t *)addr)[10], ((uint8_t *)addr)[11], ((uint8_t *)addr)[12], ((uint8_t *)addr)[13], ((uint8_t *)addr)[14], ((uint8_t *)addr)[15])
 #define PRINTLLADDR(lladdr) PRINTF("[%02x:%02x:%02x:%02x:%02x:%02x]",(lladdr)->addr[0], (lladdr)->addr[1], (lladdr)->addr[2], (lladdr)->addr[3],(lladdr)->addr[4], (lladdr)->addr[5])
 #else
 #define PRINTF(...)
 #define PRINT6ADDR(addr)
+#define SPRINT6ADDR(buffer, addr) sprintf(buffer, "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", ((uint8_t *)addr)[0], ((uint8_t *)addr)[1], ((uint8_t *)addr)[2], ((uint8_t *)addr)[3], ((uint8_t *)addr)[4], ((uint8_t *)addr)[5], ((uint8_t *)addr)[6], ((uint8_t *)addr)[7], ((uint8_t *)addr)[8], ((uint8_t *)addr)[9], ((uint8_t *)addr)[10], ((uint8_t *)addr)[11], ((uint8_t *)addr)[12], ((uint8_t *)addr)[13], ((uint8_t *)addr)[14], ((uint8_t *)addr)[15])
 #define PRINTLLADDR(addr)
 #endif
 
 #define MAX_KEVMOD_BODY 10240
 #define MAX_KEVMODEL_SIZE 5*1024
 #define CHUNKS_TOTAL 2097152
+#define IP6_ADDR_SIZE 40
 
 /* Global variables */
 char buffer[100];
 const char *modelname = "current_model";
 const char *new_modelname = "new_model";
+int modelLength = 0;
 int mem_count = 0;
 ContainerRoot *current_model = NULL;
 ContainerRoot *new_model = NULL;
@@ -130,7 +134,8 @@ int32_t strAcc = 0;
 int32_t length = 0;
 int32_t length2 = 0;
 uint16_t pref_size = 0;
-static struct etimer timer;
+/*static struct etimer timer;*/
+PROCESS(kevoree_adaptations, "Kevoree Adaptations engine");
 
 /* For printing ipv6 address in DEBUG=1*/
 static void
@@ -151,6 +156,27 @@ print_local_addresses(void)
 			PRINTF("\n");
 		}
 	}
+}
+
+/* For printing ipv6 address in DEBUG=1*/
+static char
+*get_local_addresses(char *_buffer)
+{
+	char *buf = _buffer;
+	int i;
+	uint8_t state;
+
+	for(i = 0; i < UIP_DS6_ADDR_NB; i++)
+	{
+		state = uip_ds6_if.addr_list[i].state;
+
+		if(uip_ds6_if.addr_list[i].isused && (state == ADDR_TENTATIVE || state == ADDR_PREFERRED))
+		{
+			SPRINT6ADDR(buf, &uip_ds6_if.addr_list[i].ipaddr);
+		}
+	}
+
+	return buf;
 }
 
 void* my_malloc(size_t s)
@@ -318,14 +344,14 @@ void actionprintpath(char *path, Type type, void *value)
 {
 	switch(type)
 	{
-		case STRING:
-			printf("path = %s  value = %s\n",path,(char*)value);
-			break;
+	case STRING:
+		printf("path = %s  value = %s\n",path,(char*)value);
+		break;
 
-		case BOOL:
-		case INTEGER:
-			printf("path = %s  value = %d\n", path, (int)value);
-			break;
+	case BOOL:
+	case INTEGER:
+		printf("path = %s  value = %d\n", path, (int)value);
+		break;
 	}
 }
 
@@ -334,72 +360,72 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 	char* path = strdup(_path);
 	switch(type)
 	{
-		case STRING:
-			path = strtok(path, "\\");
-			if(new_model->FindByPath(path, new_model) == NULL)
+	case STRING:
+		path = strtok(path, "\\");
+		if(new_model->FindByPath(path, new_model) == NULL)
+		{
+			printf("path = %s  value = %s\n", path, (char*)value);
+			printf("Path %s does not exist in new_model, removing...\n\n", path);
+		}
+		else
+		{
+			printf("path = %s  value = %s\n", _path, (char*)value);
+			char* string = current_model->FindByPath(_path, current_model);
+			char* string2 = new_model->FindByPath(_path, new_model);
+			printf("Current attribute value: %s\n", string);
+			printf("New attribute value: %s\n", string2);
+			if(string != NULL && string2 != NULL)
 			{
-				printf("path = %s  value = %s\n", path, (char*)value);
-				printf("Path %s does not exist in new_model, removing...\n\n", path);
-			}
-			else
-			{
-				printf("path = %s  value = %s\n", _path, (char*)value);
-				char* string = current_model->FindByPath(_path, current_model);
-				char* string2 = new_model->FindByPath(_path, new_model);
-				printf("Current attribute value: %s\n", string);
-				printf("New attribute value: %s\n", string2);
-				if(string != NULL && string2 != NULL)
-				{
-					if(!strcmp(string2, string))
-					{
-						printf("Identical attributes, nothing to change...\n\n");
-					}
-					else
-					{
-						printf("Changing attribute to %s in current_model\n\n", string2);
-					}
-				}
-				else if(string == NULL && string2 != NULL)
-				{
-					printf("Current attribute is NULL, changing to new attribute '%s'\n\n", string2);
-				}
-				else if(string != NULL && string2 == NULL)
-				{
-					printf("Changing attribute to NULL\n\n");
-				}
-				else
-				{
-					printf("Both attributes are NULL, nothing to change\n\n");
-				}
-			}
-			break;
-
-		case BOOL:
-		case INTEGER:
-			path = strtok(path, "\\");
-			if(new_model->FindByPath(path, new_model) == NULL)
-			{
-				printf("path = %s  value = %d\n", path, (int)value);
-				printf("Path %s does not exist in new_model, removing...\n\n", path);
-			}
-			else
-			{
-				printf("path = %s  value = %d\n", path, (int)value);
-				int v = current_model->FindByPath(_path, current_model);
-				int v2 = new_model->FindByPath(_path, new_model);
-				printf("Current attribute value: %d\n", v);
-				printf("New attribute value: %d\n", v2);
-				if(v == v2)
+				if(!strcmp(string2, string))
 				{
 					printf("Identical attributes, nothing to change...\n\n");
 				}
 				else
 				{
-					printf("Changing attribute to %d in current_model\n\n", v2);
+					printf("Changing attribute to %s in current_model\n\n", string2);
 				}
-
 			}
-			break;
+			else if(string == NULL && string2 != NULL)
+			{
+				printf("Current attribute is NULL, changing to new attribute '%s'\n\n", string2);
+			}
+			else if(string != NULL && string2 == NULL)
+			{
+				printf("Changing attribute to NULL\n\n");
+			}
+			else
+			{
+				printf("Both attributes are NULL, nothing to change\n\n");
+			}
+		}
+		break;
+
+	case BOOL:
+	case INTEGER:
+		path = strtok(path, "\\");
+		if(new_model->FindByPath(path, new_model) == NULL)
+		{
+			printf("path = %s  value = %d\n", path, (int)value);
+			printf("Path %s does not exist in new_model, removing...\n\n", path);
+		}
+		else
+		{
+			printf("path = %s  value = %d\n", _path, (int)value);
+			int v = current_model->FindByPath(_path, current_model);
+			int v2 = new_model->FindByPath(_path, new_model);
+			printf("Current attribute value: %d\n", v);
+			printf("New attribute value: %d\n", v2);
+			if(v == v2)
+			{
+				printf("Identical attributes, nothing to change...\n\n");
+			}
+			else
+			{
+				printf("Changing attribute to %d in current_model\n\n", v2);
+			}
+
+		}
+		break;
 	}
 }
 
@@ -408,32 +434,32 @@ void actionAdd(char* _path, Type type, void* value)
 	char* path = strdup(_path);
 	switch(type)
 	{
-		case STRING:
-			printf("path = %s  value = %s\n", path, (char*)value);
-			path = strtok(path, "\\");
-			if(current_model->FindByPath(path, current_model) == NULL)
-			{
-				printf("Path %s does not exist in curent_model, adding...\n\n", path);
-			}
-			else
-			{
-				printf("Path %s already exists...\n", path);
-			}
-			break;
+	case STRING:
+		printf("path = %s  value = %s\n", path, (char*)value);
+		/*path = strtok(path, "\\");*/
+		if(current_model->FindByPath(path, current_model) == NULL)
+		{
+			printf("Path %s does not exist in curent_model, adding...\n\n", path);
+		}
+		else
+		{
+			printf("Path %s already exists...\n", path);
+		}
+		break;
 
-		case BOOL:
-		case INTEGER:
-			printf("path = %s  value = %d\n", path, (int)value);
-			path = strtok(path, "\\");
-			if(current_model->FindByPath(path, current_model) == NULL)
-			{
-				printf("Path %s does not exist in current_model, adding...\n\n", path);
-			}
-			else
-			{
-				printf("Path %s already exists...\n", path);
-			}
-			break;
+	case BOOL:
+	case INTEGER:
+		printf("path = %s  value = %d\n", path, (int)value);
+		/*path = strtok(path, "\\");*/
+		if(current_model->FindByPath(path, current_model) == -1)
+		{
+			printf("Path %s does not exist in current_model, adding...\n\n", path);
+		}
+		else
+		{
+			printf("Path %s already exists...\n", path);
+		}
+		break;
 	}
 }
 
@@ -498,7 +524,6 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 	char buf[preferred_size];
 	const char *modelLengthStr = NULL;
 	char modelLengthChar[10];
-	int modelLength = 0;
 	int fd_read;
 	int32_t n = 0;
 
@@ -662,7 +687,7 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 		if ((len = (REST.get_query_variable(request, "length", &modelLengthStr))))
 		{
 			memcpy(modelLengthChar, modelLengthStr, len);
-			PRINTF("String model legth = %s\n", modelLengthChar);
+			PRINTF("String model length = %s\n", modelLengthChar);
 			modelLength = atoi(modelLengthChar);
 			PRINTF("Integer model length = %d\n", modelLength);
 		}
@@ -756,8 +781,9 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 			if(modelLength == length)
 			{
 				printf("File transferred successfully\n");
+				process_start(&kevoree_adaptations, NULL);
 
-				char *jsonModel = malloc(modelLength + 1);
+				/*char *jsonModel = malloc(modelLength + 1);
 
 				if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
 				{
@@ -766,7 +792,7 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 					if((modelRead = cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
 					{
 						printf("new_model JSON loaded in RAM\n");
-						/*printf("%s\n", jsonModel);*/
+						printf("%s\n", jsonModel);
 					}
 					else
 					{
@@ -785,16 +811,6 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 				new_model = JSONKevDeserializer(&jsonState, jsonparse_next(&jsonState));
 
 				if(new_model != NULL)
-				{
-					printf("new_model loaded successfully!\n");
-					etimer_set(&timer, CLOCK_CONF_SECOND);
-				}
-				else
-				{
-					printf("new_model cannot be loaded\n");
-				}
-
-				/*if(new_model != NULL)
 				{
 					visitor_print->action = actionUpdateDelete;
 					current_model->VisitPaths(current_model, visitor_print);
@@ -829,6 +845,9 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 				{
 					printf("ERROR: could not read from memory, file does not exist.\n");
 				}
+
+				strAcc = length = length2 = 0;
+				*offset = -1;
 			}
 
 		}
@@ -1226,23 +1245,137 @@ radio_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred
 PROCESS(rest_server_example, "Erbium Example Server");
 AUTOSTART_PROCESSES(&rest_server_example);
 
+PROCESS_THREAD(kevoree_adaptations, event, dt)
+{
+	PROCESS_BEGIN();
+
+	int fd_read = -1;
+
+	printf("Starting Kevoree adaptations\n");
+	printf("Trying to load new_model with length %d\n", modelLength);
+
+	char *jsonModel = malloc(modelLength + 1);
+
+	/*if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
+	{
+		int modelRead;
+
+		if((modelRead = cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
+		{
+			printf("new_model JSON loaded in RAM\n");
+			printf("%s\n", jsonModel);
+		}
+		else
+		{
+			printf("Empty model!\n");
+		}
+	}
+	else
+	{
+		printf("JSON model cannot be loaded\n");
+	}*/
+
+	if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
+	{
+		length = cfs_seek(fd_read, 0 , CFS_SEEK_END);
+		cfs_seek(fd_read, 0, CFS_SEEK_SET);
+
+		/*printf("new_model loaded with length: %ld \n", length);*/
+		/*char *buf = malloc(length);
+			cfs_read(fd_read, buf, strlen(buf));
+			printf("%s", buf);*/
+		if((cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
+		{
+			printf("new_model JSON loaded in RAM\n");
+			printf("%s\n", jsonModel);
+		}
+		else
+		{
+			printf("Empty model!\n");
+		}
+
+	}
+
+	struct jsonparse_state jsonState;
+
+	jsonparse_setup(&jsonState, jsonModel, length + 1);
+
+	new_model = JSONKevDeserializer(&jsonState, jsonparse_next(&jsonState));
+
+	if(new_model != NULL)
+	{
+		printf("new_model loaded successfully!\n");
+		/*etimer_set(&timer, CLOCK_CONF_SECOND);*/
+	}
+	else
+	{
+		printf("new_model cannot be loaded\n");
+	}
+
+
+	if(new_model != NULL)
+	{
+		printf("new_model detected, comparing with curent_model\n\n");
+		visitor_print->action = actionprintf;
+		/*current_model->Visit(current_model, visitor_print);*/
+		new_model->Visit(new_model, visitor_print);
+		visitor_print->action = actionUpdateDelete;
+		current_model->VisitPaths(current_model, visitor_print);
+		visitor_print->action = actionAdd;
+		new_model->VisitPaths(new_model, visitor_print);
+	}
+	else
+	{
+		printf("New model cannot be visited!\n");
+	}
+
+	free(jsonModel);
+
+	PROCESS_END();
+}
+
 PROCESS_THREAD(rest_server_example, ev, data)
 {
 	/*cfs_coffee_format();*/
+	PROCESS_BEGIN();
+
 	print_local_addresses();
 	int fd_read;
 
 	if((fd_read = cfs_open(modelname, CFS_READ)) != -1)
 	{
 		printf("Removing model %s ...\n", modelname);
-		cfs_remove(modelname);
+		if(!cfs_remove(modelname))
+		{
+			printf("model %s successfully removed!\n", modelname);
+		}
+		else
+		{
+			printf("Cannot remove model %s!\n", modelname);
+		}
 	}
 	else
 	{
 		printf("No model is present!\n");
 	}
 
-	PROCESS_BEGIN();
+	if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
+	{
+		printf("Removing model %s ...\n", new_modelname);
+		if(!cfs_remove(new_modelname))
+		{
+			printf("model %s successfully removed!\n", new_modelname);
+		}
+		else
+		{
+			printf("Cannot remove model %s!\n", new_modelname);
+		}
+	}
+	else
+	{
+		printf("No new_model is present!\n");
+	}
+
 
 	PRINTF("Starting Kevoree Example Server\n");
 
@@ -1310,51 +1443,43 @@ PROCESS_THREAD(rest_server_example, ev, data)
 #if REST_RES_MODELS
 	rest_activate_resource(&resource_models);
 #endif
-	//printf("Starting kevoree C implementation\n");
 
-	/* ContainerNode contikiNode
-  		ContainerNode* serverNode = new_ContainerNode();
-  		serverNode->super->super->name = malloc(sizeof(char) * (strlen("server-node")) + 1);
-  		strcpy(serverNode->super->super->name, "server-node");
-  		serverNode->super->started = true;
-  		serverNode->super->metaData = malloc(sizeof(char) * (strlen("")) + 1);
-  		strcpy(serverNode->super->metaData, "");*/
-
-	/* NeworkProperty front */
+	/* NeworkProperty front
 	NetworkProperty* contikiNodeFront = new_NetworkProperty();
 	contikiNodeFront->super->name = malloc(sizeof(char) * (strlen("front")) + 1);
 	strcpy(contikiNodeFront->super->name, "front");
 	contikiNodeFront->value = malloc(sizeof(char) * (strlen("contiki.kevoree.org")) + 1);
-	strcpy(contikiNodeFront->value, "contiki.kevoree.org");
+	strcpy(contikiNodeFront->value, "contiki.kevoree.org");*/
 
-	/* NeworkProperty local */
+	/* NeworkProperty local
 	NetworkProperty* contikiNodeLocal = new_NetworkProperty();
 	contikiNodeLocal->super->name = malloc(sizeof(char) * (strlen("local")) + 1);
 	strcpy(contikiNodeLocal->super->name, "local");
 	contikiNodeLocal->value = malloc(sizeof(char) * (strlen("aaaa::0:0:3")) + 1);
-	strcpy(contikiNodeLocal->value, "aaaa::0:0:3");
+	strcpy(contikiNodeLocal->value, "aaaa::0:0:3");*/
 
 	/* NeworkProperty front */
 	NetworkProperty* serverNodeFront = new_NetworkProperty();
 	serverNodeFront->super->name = malloc(sizeof(char) * (strlen("front")) + 1);
 	strcpy(serverNodeFront->super->name, "front");
-	serverNodeFront->value = malloc(sizeof(char) * (strlen("contiki.kevoree.org")) + 1);
-	strcpy(serverNodeFront->value, "contiki.kevoree.org");
+	serverNodeFront->value = malloc(sizeof(char) * (strlen("m3-XX.lille.iotlab.info")) + 1);
+	strcpy(serverNodeFront->value, "m3-XX.lille.iotlab.info");
 
 	/* NeworkProperty local */
 	NetworkProperty* serverNodeLocal = new_NetworkProperty();
 	serverNodeLocal->super->name = malloc(sizeof(char) * (strlen("local")) + 1);
 	strcpy(serverNodeLocal->super->name, "local");
-	serverNodeLocal->value = malloc(sizeof(char) * (strlen("aaaa::0:0:3")) + 1);
-	strcpy(serverNodeLocal->value, "aaaa::0:0:5");
+	serverNodeLocal->value = malloc(IP6_ADDR_SIZE + 1);
+	/*strcpy(serverNodeLocal->value, "aaaa::0:0:5");*/
+	get_local_addresses(serverNodeLocal->value);
 
-	/* NetworkInfo ip */
+	/* NetworkInfo ip
 	NetworkInfo* contikiNodeIP = new_NetworkInfo();
 	contikiNodeIP->super->name = malloc(sizeof(char) * (strlen("ip")) + 1);
 	strcpy(contikiNodeIP->super->name, "ip");
 
 	contikiNodeIP->AddValues(contikiNodeIP, contikiNodeFront);
-	contikiNodeIP->AddValues(contikiNodeIP, contikiNodeLocal);
+	contikiNodeIP->AddValues(contikiNodeIP, contikiNodeLocal);*/
 
 	/* NetworkInfo ip */
 	NetworkInfo* serverNodeIP = new_NetworkInfo();
@@ -1420,24 +1545,24 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		ctFakeConsole->factoryBean = malloc(sizeof(char) * (strlen("")) + 1);
   		strcpy(ctFakeConsole->factoryBean, "");*/
 
-	/* TypeDefinition HelloWorldType
+	/* TypeDefinition HelloWorldType */
 	TypeDefinition* ctHelloWorld = newPoly_ComponentType();
 	ctHelloWorld->abstract = false;
-	ctHelloWorld->super->name = malloc(sizeof(char) * (strlen("BlinkType")) + 1);
-	strcpy(ctHelloWorld->super->name, "BlinkType");
+	ctHelloWorld->super->name = malloc(sizeof(char) * (strlen("HelloWorld")) + 1);
+	strcpy(ctHelloWorld->super->name, "HelloWorld");
 	ctHelloWorld->version = malloc(sizeof(char) * (strlen("0.0.1")) + 1);
 	strcpy(ctHelloWorld->version, "0.0.1");
 	ctHelloWorld->bean = malloc(sizeof(char) * (strlen("")) + 1);
 	strcpy(ctHelloWorld->bean, "");
 	ctHelloWorld->factoryBean = malloc(sizeof(char) * (strlen("")) + 1);
-	strcpy(ctHelloWorld->factoryBean, "");*/
+	strcpy(ctHelloWorld->factoryBean, "");
 
 	/* TypeLibrary Contiki */
 	TypeLibrary* contiki = new_TypeLibrary();
-	contiki->super->name = malloc(sizeof(char) * (strlen("Contiki")) + 1);
-	strcpy(contiki->super->name, "Contiki");
+	contiki->super->name = malloc(sizeof(char) * (strlen("ContikiLib")) + 1);
+	strcpy(contiki->super->name, "ContikiLib");
 	/*contiki->AddSubTypes(contiki, ctFakeConsole);*/
-	/*contiki->AddSubTypes(contiki, ctHelloWorld);*/
+	contiki->AddSubTypes(contiki, ctHelloWorld);
 	contiki->AddSubTypes(contiki, contikiNodeType);
 	contiki->AddSubTypes(contiki, coapGroupType);
 
@@ -1593,7 +1718,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	gtDicAttrProxy->datatype = malloc(sizeof(char) * (strlen("int")) + 1);
 	strcpy(gtDicAttrProxy->datatype, "int");
 	gtDicAttrProxy->defaultValue = malloc(sizeof(char) * (strlen("")) + 1);
-	strcpy(gtDicAttrProxy->defaultValue, "9000");
+	strcpy(gtDicAttrProxy->defaultValue, "20000");
 
 	/* GroupType DictionaryAttribute proxy_port
   		DictionaryAttribute* gtDicAttrProxy = new_DictionaryAttribute();
@@ -1686,7 +1811,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		duFakeConsole->type = malloc(sizeof(char) * (strlen("ce")) + 1);
   		strcpy(duFakeConsole->type,"ce");*/
 
-	/* DeployUnit //kevoree-comp-helloworld/0.0.1
+	/* DeployUnit //kevoree-comp-helloworld/0.0.1 */
 	DeployUnit* duHelloWorld = new_DeployUnit();
 	duHelloWorld->super->name = malloc(sizeof(char) * (strlen("kevoree-comp-blink")) + 1);
 	strcpy(duHelloWorld->super->name, "kevoree-comp-blink");
@@ -1699,7 +1824,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	duHelloWorld->url = malloc(sizeof(char) * (strlen("")) + 1);
 	strcpy(duHelloWorld->url, "");
 	duHelloWorld->type = malloc(sizeof(char) * (strlen("ce")) + 1);
-	strcpy(duHelloWorld->type,"ce");*/
+	strcpy(duHelloWorld->type,"ce");
 
 	/* PortTypeRef sendMsg
   		PortTypeRef* ptrSendMsg = new_PortTypeRef();
@@ -1779,8 +1904,8 @@ PROCESS_THREAD(rest_server_example, ev, data)
 
 	/* Group CoAP */
 	Group* coapGroup = new_Group();
-	coapGroup->super->super->name = malloc(sizeof(char) * (strlen("CoAPGroup")) + 1);
-	strcpy(coapGroup->super->super->name, "CoAPGroup");
+	coapGroup->super->super->name = malloc(sizeof(char) * (strlen("group0")) + 1);
+	strcpy(coapGroup->super->super->name, "group0");
 	coapGroup->super->started = true;
 	coapGroup->super->metaData = malloc(sizeof(char) * (strlen("")) + 1);
 	strcpy(coapGroup->super->metaData, "");
@@ -1804,8 +1929,8 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	DictionaryValue* groupValueProxy = new_DictionaryValue();
 	groupValueProxy->name = malloc(sizeof(char) * (strlen("proxy_port")) + 1);
 	strcpy(groupValueProxy->name, "proxy_port");
-	groupValueProxy->value = malloc(sizeof(char) * (strlen("9000")) + 1);
-	strcpy(groupValueProxy->value, "9000");
+	groupValueProxy->value = malloc(sizeof(char) * (strlen("20000")) + 1);
+	strcpy(groupValueProxy->value, "20000");
 
 	/* Group DictionaryValue path */
 	DictionaryValue* groupValuePath = new_DictionaryValue();
@@ -1842,13 +1967,13 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		serverNode->AddComponents(serverNode, ciHelloWorld);
 
   		ctFakeConsole->AddDeployUnit(ctFakeConsole, duFakeConsole);*/
-	/*ctHelloWorld->AddDeployUnit(ctHelloWorld, duHelloWorld);*/
+	ctHelloWorld->AddDeployUnit(ctHelloWorld, duHelloWorld);
 	contikiNodeType->AddDeployUnit(contikiNodeType, kevContikiNode);
 	coapGroupType->AddDeployUnit(coapGroupType, kevGroupCoap);
 	/*coapChanType->AddDeployUnit(coapChanType, kevChanCoap);*/
 
 	/*ctFakeConsole->AddDictionaryType(ctFakeConsole, dtFakeConsole);*/
-	/*ctHelloWorld->AddDictionaryType(ctHelloWorld, dtHelloWorld);*/
+	ctHelloWorld->AddDictionaryType(ctHelloWorld, dtHelloWorld);
 	coapGroupType->AddDictionaryType(coapGroupType, gtDicType);
 	/*coapChanType->AddDictionaryType(coapChanType, chanDicType);*/
 
@@ -1862,79 +1987,21 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	/*((ComponentType*)ctHelloWorld->pDerivedObj)->AddProvided((ComponentType*)ctHelloWorld->pDerivedObj, ptrFake);
   	((ComponentType*)ctHelloWorld->pDerivedObj)->AddRequired((ComponentType*)ctHelloWorld->pDerivedObj, ptrSendText);*/
 
-	/*for(int i = 0; i < 20; i++)
-  		{*/
-
-	/*model->AddNodes(model, contikiNode);*/
-	/*model->AddNodes(model, serverNode);
-  		model->AddTypeDefinitions(model, ctFakeConsole);*/
-	/*model->AddTypeDefinitions(model, ctHelloWorld);
-  	model->AddTypeDefinitions(model, contikiNodeType);
-  	model->AddTypeDefinitions(model, coapGroupType);
-  	model->AddTypeDefinitions(model, coapChanType);
-  	model->AddLibraries(model, contiki);
-  	model->AddHubs(model, defaultChannel);*/
-
-	/*model->AddBindings(model, mbInMsg);*/
-	/*model->AddBindings(model, mbFake);*/
-	/*model->AddBindings(model, mbSendMsg);*/
-	/*model->AddBindings(model, mbSendText);*/
-
-	/*model->AddDeployUnits(model, duFakeConsole);*/
-	/*model->AddDeployUnits(model, duHelloWorld);
-  	model->AddDeployUnits(model, kevContikiNode);
-  	model->AddDeployUnits(model, kevGroupCoap);
-  	model->AddDeployUnits(model, kevChanCoap);
-  	model->AddGroups(model, coapGroup);*/
-
-	/*printf("Model %s created with success!\n\n", model->InternalGetKey(model));*/
-
-	/*model2->AddNodes(model2, contikiNode);
-  		model2->AddNodes(model2, serverNode);
-  		model2->AddTypeDefinitions(model2, ctFakeConsole);
-  		model2->AddTypeDefinitions(model2, ctHelloWorld);
-  		model2->AddTypeDefinitions(model2, contikiNodeType);
-  		model2->AddTypeDefinitions(model2, coapGroupType);
-  		model2->AddTypeDefinitions(model2, coapChanType);
-  		model2->AddLibraries(model2, contiki);
-  		model2->AddHubs(model2, defaultChannel);
-  		model2->AddBindings(model2, mbInMsg);
-  		model2->AddBindings(model2, mbFake);
-  		model2->AddBindings(model2, mbSendMsg);
-  		model2->AddBindings(model2, mbSendText);
-  		model2->AddDeployUnits(model2, duFakeConsole);
-  		model2->AddDeployUnits(model2, duHelloWorld);
-  		model2->AddDeployUnits(model2, kevContikiNode);
-  		model2->AddDeployUnits(model2, kevGroupCoap);
-  		model2->AddDeployUnits(model2, kevChanCoap);
-  		model2->AddGroups(model2, coapGroup);
-  		model2->AddNodes(model2, contikiNode);*/
-
-	/*printf("Model %s created with success! \n\n", model2->InternalGetKey(model2));*/
-
-	/*visitor_print->action =  actionprintf;*/
-	/*visitor_print->action =  ActionCompare;*/
-
-	/*model->Visit(model, visitor_print);*/
-	/*printf("\nVisiting model2 \n\n");
-  		model2->Visit(model2, visitor_print);*/
-	//	printf("Process finished!\n\n");
-
 	current_model = new_ContainerRoot();
 
 	current_model->AddLibraries(current_model, contiki);
+	current_model->AddLibraries(current_model, defLib);
 
 	/*type definition*/
-	/*modelX->AddTypeDefinitions(modelX, ctHelloWorld);*/
 	current_model->AddTypeDefinitions(current_model, contikiNodeType);
 	current_model->AddTypeDefinitions(current_model, coapGroupType);
-
-
+	current_model->AddTypeDefinitions(current_model, ctHelloWorld);
 
 	/*deploy unit*/
 	/*modelX->AddDeployUnits(modelX, duHelloWorld);*/
 	current_model->AddDeployUnits(current_model, kevContikiNode);
 	current_model->AddDeployUnits(current_model, kevGroupCoap);
+	current_model->AddDeployUnits(current_model, duHelloWorld);
 
 
 	/*instances*/
@@ -1954,25 +2021,26 @@ PROCESS_THREAD(rest_server_example, ev, data)
 		strcpy(contikiNode->super->metaData, "");
 
 		/*contiki->AddSubTypes(contiki, coapChanType);*/
-		contikiNode->AddNetworkInformation(contikiNode, contikiNodeIP);
+		contikiNode->AddNetworkInformation(contikiNode, serverNodeIP);
 		contikiNode->super->AddTypeDefinition(contikiNode->super, contikiNodeType);
 		contikiNode->AddGroups(contikiNode, coapGroup);
 
 		for(j = 0; j < 1; j++)
 		{
-			/*ComponentInstance* ciHelloWorld = new_ComponentInstance();
-			ciHelloWorld->super->super->name = malloc(sizeof(char) * (strlen("XX")) + 1);
-			sprintf(ciHelloWorld->super->super->name, "%d", j);
+			ComponentInstance* ciHelloWorld = new_ComponentInstance();
+			ciHelloWorld->super->super->name = malloc(sizeof(char) * (strlen("HelloWorldXX")) + 1);
+			sprintf(ciHelloWorld->super->super->name, "HelloWorld%d", j);
 			ciHelloWorld->super->metaData = malloc(sizeof(char) * (strlen("")) + 1);
 			strcpy(ciHelloWorld->super->metaData, "");
 			ciHelloWorld->super->started = true;
-			ciHelloWorld->super->AddTypeDefinition(ciHelloWorld->super, ctHelloWorld);*/
+			ciHelloWorld->super->AddTypeDefinition(ciHelloWorld->super, ctHelloWorld);
 
 			/*((ComponentType*)ctHelloWorld->pDerivedObj)->AddProvided(ctHelloWorld->pDerivedObj, ptrFake);
 			((ComponentType*)ctHelloWorld->pDerivedObj)->AddRequired(ctHelloWorld->pDerivedObj, ptrSendText);
 			contikiNode->AddComponents(contikiNode, ciHelloWorld);
 			ciHelloWorld->AddProvided(ciHelloWorld, pFake);
 			ciHelloWorld->AddRequired(ciHelloWorld, pSendText);*/
+			contikiNode->AddComponents(contikiNode, ciHelloWorld);
 		}
 
 		coapGroup->AddSubNodes(coapGroup, contikiNode);
@@ -2020,8 +2088,8 @@ PROCESS_THREAD(rest_server_example, ev, data)
 		if((modelRead = cfs_read(fd_read, jsonModel, length)) != -1)
 		{
 			printf("Model loaded in RAM\n");*/
-			/*printf("%s", jsonModel);*/
-		/*}
+	/*printf("%s", jsonModel);*/
+	/*}
 		else
 		{
 			printf("Empty model!\n");
@@ -2051,7 +2119,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 
 
 	while(1) {
-		/*PROCESS_WAIT_EVENT();*/
+		PROCESS_WAIT_EVENT();
 #if defined (PLATFORM_HAS_BUTTON)
 		if (ev == sensors_event && data == &button_sensor) {
 			PRINTF("BUTTON\n");
@@ -2069,27 +2137,6 @@ PROCESS_THREAD(rest_server_example, ev, data)
 			etimer_restart(&ledTimer);
 			leds_toggle(LEDS_RED);
 		}*/
-		PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
-		/*if(ev == PROCESS_EVENT_TIMER)
-		{*/
-			if(new_model != NULL)
-			{
-				printf("new_model detected, comparing with curent_model\n\n");
-				/*new_model->Visit(new_model, visitor_print);*/
-				visitor_print->action = actionUpdateDelete;
-				current_model->VisitPaths(current_model, visitor_print);
-				visitor_print->action = actionAdd;
-				new_model->VisitPaths(new_model, visitor_print);
-				new_model->Delete(new_model);
-				new_model = NULL;
-			}
-			else
-			{
-				printf("New model cannot be visited!\n");
-			}
-		/*}*/
-
-
 	} /* while (1) */
 
 	PROCESS_END();
