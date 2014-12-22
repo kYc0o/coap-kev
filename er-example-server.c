@@ -46,7 +46,10 @@
 #include "cfs/cfs.h"
 #include "json.h"
 #include "jsonparse.h"
+#include "lib/list.h"
 #include "JSONModelLoader.h"
+#include "ModelTrace.h"
+#include "TraceSequence.h"
 
 
 /* Define which resources to include to meet memory constraints. */
@@ -126,6 +129,7 @@ int modelLength = 0;
 int mem_count = 0;
 ContainerRoot *current_model = NULL;
 ContainerRoot *new_model = NULL;
+LIST(model_traces);
 Visitor *visitor_print;
 static int32_t large_update_size = 0;
 static uint8_t large_update_store[MAX_KEVMOD_BODY] = {0};
@@ -134,7 +138,7 @@ int32_t strAcc = 0;
 int32_t length = 0;
 int32_t length2 = 0;
 uint16_t pref_size = 0;
-/*static struct etimer timer;*/
+static struct etimer kev_timer;
 PROCESS(kevoree_adaptations, "Kevoree Adaptations engine");
 
 /* For printing ipv6 address in DEBUG=1*/
@@ -221,8 +225,6 @@ void write_to_cfs(char *buf)
 
 void actionstore(char *path, Type type, void *value)
 {
-	/*char i[3];*/
-
 	switch(type)
 	{
 	case STRING:
@@ -236,13 +238,11 @@ void actionstore(char *path, Type type, void *value)
 		break;
 
 	case BOOL:
-		/*sprintf(i, "%d", (bool)value);*/
 		sprintf(buffer, "\"%s\" : \"%d\"", path, (bool)value);
 		write_to_cfs(buffer);
 		break;
 
 	case INTEGER:
-		/*sprintf(i, "%d",(int)value);*/
 		sprintf(buffer, "\"%s\" : \"%d\"", path, (int)value);
 		write_to_cfs(buffer);
 		break;
@@ -366,6 +366,8 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 		{
 			printf("path = %s  value = %s\n", path, (char*)value);
 			printf("Path %s does not exist in new_model, removing...\n\n", path);
+			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (char*)value, path);
+			list_add(model_traces, mt);
 		}
 		else
 		{
@@ -383,15 +385,21 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 				else
 				{
 					printf("Changing attribute to %s in current_model\n\n", string2);
+					ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, string2, "STRING");
+					list_add(model_traces, mt);
 				}
 			}
 			else if(string == NULL && string2 != NULL)
 			{
 				printf("Current attribute is NULL, changing to new attribute '%s'\n\n", string2);
+				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, string2, "STRING");
+				list_add(model_traces, mt);
 			}
 			else if(string != NULL && string2 == NULL)
 			{
 				printf("Changing attribute to NULL\n\n");
+				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, NULL, "STRING");
+				list_add(model_traces, mt);
 			}
 			else
 			{
@@ -407,6 +415,8 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 		{
 			printf("path = %s  value = %d\n", path, (int)value);
 			printf("Path %s does not exist in new_model, removing...\n\n", path);
+			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (char*)value, path);
+			list_add(model_traces, mt);
 		}
 		else
 		{
@@ -422,6 +432,8 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 			else
 			{
 				printf("Changing attribute to %d in current_model\n\n", v2);
+				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, NULL, "INT");
+				list_add(model_traces, mt);
 			}
 
 		}
@@ -440,6 +452,8 @@ void actionAdd(char* _path, Type type, void* value)
 		if(current_model->FindByPath(path, current_model) == NULL)
 		{
 			printf("Path %s does not exist in curent_model, adding...\n\n", path);
+			ModelTrace *mt = newPoly_ModelAddTrace(path, (char*)value, path, "STRING");
+			list_add(model_traces, mt);
 		}
 		else
 		{
@@ -454,6 +468,8 @@ void actionAdd(char* _path, Type type, void* value)
 		if(current_model->FindByPath(path, current_model) == -1)
 		{
 			printf("Path %s does not exist in current_model, adding...\n\n", path);
+			ModelTrace *mt = newPoly_ModelAddTrace(path, (char*)value, path, "INT");
+			list_add(model_traces, mt);
 		}
 		else
 		{
@@ -506,7 +522,7 @@ helloworld_handler(void* request, void* response, uint8_t *buffer, uint16_t pref
  * Resources are defined by the RESOURCE macro.
  * Signature: resource name, the RESTful methods it handles, and its URI path (omitting the leading slash).
  */
-RESOURCE(models, METHOD_GET | METHOD_PUT, "models", "title=\"GET or PUT a kevoree model\";rt=\"JSON\"");
+RESOURCE(models, METHOD_GET | METHOD_PUT, "models", "title=\"GET or PUT (?length=3000...) a kevoree model\";rt=\"JSON\"");
 
 /*
  * A handler function named [resource name]_handler must be implemented for each RESOURCE.
@@ -646,7 +662,7 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 			}
 
 			/* The query string can be retrieved by rest_get_query() or parsed for its key-value pairs. */
-			REST.set_header_content_type(response, REST.type.TEXT_PLAIN); /* text/plain is the default, hence this option could be omitted. */
+			REST.set_header_content_type(response, REST.type.APPLICATION_JSON); /* text/plain is the default, hence this option could be omitted. */
 			REST.set_header_etag(response, (uint8_t *) &strpos, 1);
 			REST.set_response_payload(response, buffer, strpos);
 
@@ -692,7 +708,13 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 			PRINTF("Integer model length = %d\n", modelLength);
 		}
 		else
-			PRINTF("Cannot get query variable\n");
+		{
+			REST.set_response_status(response, REST.status.BAD_REQUEST);
+			const char *error_msg = "ModelLengthReq";
+			REST.set_response_payload(response, error_msg, strlen(error_msg));
+			PRINTF("ERROR: Model length required.\n");
+			return;
+		}
 
 		/*unsigned int ct = REST.get_header_content_type(request);
 
@@ -781,7 +803,10 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 			if(modelLength == length)
 			{
 				printf("File transferred successfully\n");
-				process_start(&kevoree_adaptations, NULL);
+				PROCESS_CONTEXT_BEGIN(&kevoree_adaptations);
+				etimer_set(&kev_timer, CLOCK_SECOND * 2);
+				PROCESS_CONTEXT_END(&kevoree_adaptations);
+				/*process_start(&kevoree_adaptations, NULL);*/
 
 				/*char *jsonModel = malloc(modelLength + 1);
 
@@ -824,6 +849,7 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 
 				strAcc = length = length2 = 0;
 				*offset = -1;
+				PRINTF("strAcc: %ld, length: %ld, length2: %ld, *offset: %ld\n", strAcc, length, length2, *offset);
 			}
 			else if(length > modelLength)
 			{
@@ -848,6 +874,10 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 
 				strAcc = length = length2 = 0;
 				*offset = -1;
+				REST.set_response_status(response, REST.status.BAD_REQUEST);
+				const char *error_msg = "IncorrectSize";
+				REST.set_response_payload(response, error_msg, strlen(error_msg));
+				return;
 			}
 
 		}
@@ -1248,15 +1278,19 @@ AUTOSTART_PROCESSES(&rest_server_example);
 PROCESS_THREAD(kevoree_adaptations, event, dt)
 {
 	PROCESS_BEGIN();
+	while(1)
+	{
+		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&kev_timer));
 
-	int fd_read = -1;
+		int fd_read = -1;
+		int listLength = 0;
 
-	printf("Starting Kevoree adaptations\n");
-	printf("Trying to load new_model with length %d\n", modelLength);
+		printf("Starting Kevoree adaptations\n");
+		printf("Trying to load new_model with length %d\n", modelLength);
 
-	char *jsonModel = malloc(modelLength + 1);
+		char *jsonModel = malloc(modelLength + 1);
 
-	/*if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
+		/*if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
 	{
 		int modelRead;
 
@@ -1275,67 +1309,76 @@ PROCESS_THREAD(kevoree_adaptations, event, dt)
 		printf("JSON model cannot be loaded\n");
 	}*/
 
-	if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
-	{
-		length = cfs_seek(fd_read, 0 , CFS_SEEK_END);
-		cfs_seek(fd_read, 0, CFS_SEEK_SET);
+		if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
+		{
+			length = cfs_seek(fd_read, 0 , CFS_SEEK_END);
+			cfs_seek(fd_read, 0, CFS_SEEK_SET);
 
-		/*printf("new_model loaded with length: %ld \n", length);*/
-		/*char *buf = malloc(length);
+			/*printf("new_model loaded with length: %ld \n", length);*/
+			/*char *buf = malloc(length);
 			cfs_read(fd_read, buf, strlen(buf));
 			printf("%s", buf);*/
-		if((cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
+			if((cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
+			{
+				printf("new_model JSON loaded in RAM\n");
+				printf("%s\n", jsonModel);
+			}
+			else
+			{
+				printf("Empty model!\n");
+			}
+
+		}
+
+		struct jsonparse_state jsonState;
+
+		jsonparse_setup(&jsonState, jsonModel, length + 1);
+
+		new_model = JSONKevDeserializer(&jsonState, jsonparse_next(&jsonState));
+
+		if(new_model != NULL)
 		{
-			printf("new_model JSON loaded in RAM\n");
-			printf("%s\n", jsonModel);
+			printf("new_model loaded successfully!\n");
+			/*etimer_set(&timer, CLOCK_CONF_SECOND);*/
 		}
 		else
 		{
-			printf("Empty model!\n");
+			printf("new_model cannot be loaded\n");
 		}
 
+
+		if(new_model != NULL)
+		{
+			printf("new_model detected, comparing with curent_model\n\n");
+			visitor_print->action = actionprintf;
+			/*current_model->Visit(current_model, visitor_print);*/
+			new_model->Visit(new_model, visitor_print);
+			visitor_print->action = actionUpdateDelete;
+			current_model->VisitPaths(current_model, visitor_print);
+			visitor_print->action = actionAdd;
+			new_model->VisitPaths(new_model, visitor_print);
+
+			if(listLength = list_length(model_traces))
+			{
+				TraceSequence ts = new_TraceSequence();
+				ts->populate(ts, model_traces);
+				printf(ts->toString(ts));
+			}
+		}
+		else
+		{
+			printf("New model cannot be visited!\n");
+		}
+
+		free(jsonModel);
 	}
-
-	struct jsonparse_state jsonState;
-
-	jsonparse_setup(&jsonState, jsonModel, length + 1);
-
-	new_model = JSONKevDeserializer(&jsonState, jsonparse_next(&jsonState));
-
-	if(new_model != NULL)
-	{
-		printf("new_model loaded successfully!\n");
-		/*etimer_set(&timer, CLOCK_CONF_SECOND);*/
-	}
-	else
-	{
-		printf("new_model cannot be loaded\n");
-	}
-
-
-	if(new_model != NULL)
-	{
-		printf("new_model detected, comparing with curent_model\n\n");
-		visitor_print->action = actionprintf;
-		/*current_model->Visit(current_model, visitor_print);*/
-		new_model->Visit(new_model, visitor_print);
-		visitor_print->action = actionUpdateDelete;
-		current_model->VisitPaths(current_model, visitor_print);
-		visitor_print->action = actionAdd;
-		new_model->VisitPaths(new_model, visitor_print);
-	}
-	else
-	{
-		printf("New model cannot be visited!\n");
-	}
-
-	free(jsonModel);
 
 	PROCESS_END();
 }
 
 PROCESS_THREAD(rest_server_example, ev, data)
 {
+	process_start(&kevoree_adaptations, NULL);
 	/*cfs_coffee_format();*/
 	PROCESS_BEGIN();
 
@@ -1356,7 +1399,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	}
 	else
 	{
-		printf("No model is present!\n");
+		printf("No current model is present!\n");
 	}
 
 	if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
@@ -1373,7 +1416,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	}
 	else
 	{
-		printf("No new_model is present!\n");
+		printf("No new model is present!\n");
 	}
 
 
