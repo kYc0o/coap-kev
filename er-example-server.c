@@ -1360,7 +1360,7 @@ PROCESS_THREAD(kevoree_adaptations, event, dt)
 
 			if(listLength = list_length(model_traces))
 			{
-				TraceSequence ts = new_TraceSequence();
+				TraceSequence *ts = new_TraceSequence();
 				ts->populate(ts, model_traces);
 				printf(ts->toString(ts));
 			}
