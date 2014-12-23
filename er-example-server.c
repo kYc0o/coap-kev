@@ -367,6 +367,7 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 			printf("path = %s  value = %s\n", path, (char*)value);
 			printf("Path %s does not exist in new_model, removing...\n\n", path);
 			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (char*)value, path);
+			PRINTF(mt->ToString(mt));
 			list_add(model_traces, mt);
 		}
 		else
@@ -386,6 +387,7 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 				{
 					printf("Changing attribute to %s in current_model\n\n", string2);
 					ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, string2, "STRING");
+					PRINTF(mt->ToString(mt));
 					list_add(model_traces, mt);
 				}
 			}
@@ -393,12 +395,14 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 			{
 				printf("Current attribute is NULL, changing to new attribute '%s'\n\n", string2);
 				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, string2, "STRING");
+				PRINTF(mt->ToString(mt));
 				list_add(model_traces, mt);
 			}
 			else if(string != NULL && string2 == NULL)
 			{
 				printf("Changing attribute to NULL\n\n");
 				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, NULL, "STRING");
+				PRINTF(mt->ToString(mt));
 				list_add(model_traces, mt);
 			}
 			else
@@ -415,7 +419,8 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 		{
 			printf("path = %s  value = %d\n", path, (int)value);
 			printf("Path %s does not exist in new_model, removing...\n\n", path);
-			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (char*)value, path);
+			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (int)value, path);
+			PRINTF(mt->ToString(mt));
 			list_add(model_traces, mt);
 		}
 		else
@@ -432,7 +437,8 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 			else
 			{
 				printf("Changing attribute to %d in current_model\n\n", v2);
-				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, NULL, "INT");
+				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, v2, "INT");
+				PRINTF(mt->ToString(mt));
 				list_add(model_traces, mt);
 			}
 
@@ -453,6 +459,7 @@ void actionAdd(char* _path, Type type, void* value)
 		{
 			printf("Path %s does not exist in curent_model, adding...\n\n", path);
 			ModelTrace *mt = newPoly_ModelAddTrace(path, (char*)value, path, "STRING");
+			PRINTF(mt->ToString(mt));
 			list_add(model_traces, mt);
 		}
 		else
@@ -469,6 +476,7 @@ void actionAdd(char* _path, Type type, void* value)
 		{
 			printf("Path %s does not exist in current_model, adding...\n\n", path);
 			ModelTrace *mt = newPoly_ModelAddTrace(path, (char*)value, path, "INT");
+			PRINTF(mt->ToString(mt));
 			list_add(model_traces, mt);
 		}
 		else
@@ -1358,8 +1366,9 @@ PROCESS_THREAD(kevoree_adaptations, event, dt)
 			visitor_print->action = actionAdd;
 			new_model->VisitPaths(new_model, visitor_print);
 
-			if(listLength = list_length(model_traces))
+			if((listLength = list_length(model_traces)))
 			{
+				PRINTF("Creating TraceSequences!\n");
 				TraceSequence *ts = new_TraceSequence();
 				ts->populate(ts, model_traces);
 				printf(ts->toString(ts));
