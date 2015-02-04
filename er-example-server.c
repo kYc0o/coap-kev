@@ -40,20 +40,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include "kevoree.h"
+#include <stddef.h>
+
 #include "contiki.h"
 #include "contiki-net.h"
 #include "cfs/cfs.h"
+#include "loader/elfloader.h"
+#include "lib/list.h"
 #include "json.h"
 #include "jsonparse.h"
-#include "lib/list.h"
+
+#include "kevoree.h"
+#include "AbstractComponent.h"
+#include "AbstractTypeDefinition.h"
 #include "JSONModelLoader.h"
 #include "ModelTrace.h"
 #include "TraceSequence.h"
+#include "hello-world-component.h"
 
 
 /* Define which resources to include to meet memory constraints. */
 #define REST_RES_MODELS 1
+#define REST_RES_PUT 1
 #define REST_RES_HELLO 1
 #define REST_RES_CHUNKS 0
 #define REST_RES_SEPARATE 0
@@ -66,6 +74,10 @@
 #define REST_RES_BATTERY 0
 #define REST_RES_RADIO 0
 #define REST_RES_MIRROR 0 /* causes largest code size */
+
+#define SERVER_NODE(ipaddr)   uip_ip6addr(ipaddr, 0xbbbb, 0, 0, 0, 0x0323, 0x4501, 0x2760, 0x0243) /* bbbb::323:4501:2760:243 */
+#define LOCAL_PORT      UIP_HTONS(COAP_DEFAULT_PORT+1)
+#define REMOTE_PORT     UIP_HTONS(COAP_DEFAULT_PORT)
 
 #include "erbium.h"
 #include "er-coap-13-engine.h"
@@ -138,12 +150,16 @@ int32_t strAcc = 0;
 int32_t length = 0;
 int32_t length2 = 0;
 uint16_t pref_size = 0;
+static uint32_t compPointer;
 static struct etimer kev_timer;
+static struct etimer inst_timer;
+static struct etimer process_timer;
 PROCESS(kevoree_adaptations, "Kevoree Adaptations engine");
+PROCESS(instantiator, "uKev instantiator");
+PROCESS(rest_server_example, "Erbium Example Server");
 
 /* For printing ipv6 address in DEBUG=1*/
-static void
-print_local_addresses(void)
+static void print_local_addresses(void)
 {
 	int i;
 	uint8_t state;
@@ -163,8 +179,7 @@ print_local_addresses(void)
 }
 
 /* For printing ipv6 address in DEBUG=1*/
-static char
-*get_local_addresses(char *_buffer)
+static char *get_local_addresses(char *_buffer)
 {
 	char *buf = _buffer;
 	int i;
@@ -210,12 +225,12 @@ void write_to_cfs(char *buf)
 
 	if(fd_write != -1)
 	{
-		n = cfs_write(fd_write, buf, strlen(buf));
-		cfs_close(fd_write);
-		/*if(n != -1)
-			printf(" Successfully written to cfs to fd_write %d. wrote %d bytes\n", fd_write, n);
-		else
-			printf("ERROR: could not write to memory\n");*/
+		if ((n = cfs_write(fd_write, buf, strlen(buf))) != -1) {
+			cfs_close(fd_write);
+		} else {
+			printf("ERROR: could not write to memory\n");
+			cfs_close(fd_write);
+		}
 	}
 	else
 	{
@@ -352,62 +367,111 @@ void actionprintpath(char *path, Type type, void *value)
 	case INTEGER:
 		printf("path = %s  value = %d\n", path, (int)value);
 		break;
+
+	case STRREF:
+	case BRACKET:
+	case SQBRACKET:
+	case CLOSEBRACKET:
+	case CLOSESQBRACKET:
+	case CLOSEBRACKETCOLON:
+	case CLOSESQBRACKETCOLON:
+	case COLON:
+	case RETURN:
+		printf("Type non valid!\n");
+		break;
 	}
 }
 
 void actionUpdateDelete(char* _path, Type type, void* value)
 {
-	char* path = strdup(_path);
+	char *path = strdup(_path);
+	/*
+	 * TODO return if memory is full
+	 */
 	switch(type)
 	{
 	case STRING:
 		path = strtok(path, "\\");
 		if(new_model->FindByPath(path, new_model) == NULL)
 		{
-			printf("path = %s  value = %s\n", path, (char*)value);
-			printf("Path %s does not exist in new_model, removing...\n\n", path);
+			/*printf("path = %s  value = %s\n", path, (char*)value);
+			printf("Path %s does not exist in new_model, removing...\n\n", path);*/
 			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (char*)value, path);
-			PRINTF(mt->ToString(mt));
-			list_add(model_traces, mt);
+			/*char *strTrace = mt->ToString(mt->pDerivedObj);
+				PRINTF(strTrace);
+			free(strTrace);*/
+			if(mt != NULL)
+			{
+				list_add(model_traces, mt);
+			}
+			else {
+				printf("ERROR: ModelTrace cannot be added!\n");
+				printf("path = %s  value = %s\n", path, (char*)value);
+			}
 		}
 		else
 		{
-			printf("path = %s  value = %s\n", _path, (char*)value);
+			/*printf("path = %s  value = %s\n", _path, (char*)value);*/
 			char* string = current_model->FindByPath(_path, current_model);
 			char* string2 = new_model->FindByPath(_path, new_model);
-			printf("Current attribute value: %s\n", string);
-			printf("New attribute value: %s\n", string2);
+			/*printf("Current attribute value: %s\n", string);
+			printf("New attribute value: %s\n", string2);*/
 			if(string != NULL && string2 != NULL)
 			{
 				if(!strcmp(string2, string))
 				{
-					printf("Identical attributes, nothing to change...\n\n");
+					/*printf("Identical attributes, nothing to change...\n\n");*/
 				}
 				else
 				{
-					printf("Changing attribute to %s in current_model\n\n", string2);
-					ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, string2, "STRING");
-					PRINTF(mt->ToString(mt));
-					list_add(model_traces, mt);
+					/*printf("Changing attribute to %s in current_model\n\n", string2);*/
+					ModelTrace *mt = newPoly_ModelSetTrace(path, string2, "STRING");
+					/*char *strTrace = mt->ToString(mt->pDerivedObj);
+						PRINTF(strTrace);
+						free(strTrace);*/
+					if(mt != NULL)
+					{
+						list_add(model_traces, mt);
+					}
+					else {
+						printf("ERROR: ModelTrace cannot be added!\n");
+						printf("path = %s  value = %s\n", path, (char*)value);
+					}
 				}
 			}
 			else if(string == NULL && string2 != NULL)
 			{
-				printf("Current attribute is NULL, changing to new attribute '%s'\n\n", string2);
-				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, string2, "STRING");
-				PRINTF(mt->ToString(mt));
-				list_add(model_traces, mt);
+				/*printf("Current attribute is NULL, changing to new attribute '%s'\n\n", string2);*/
+				ModelTrace *mt = newPoly_ModelSetTrace(path, string2, "STRING");
+				/*
+					char *strTrace = mt->ToString(mt->pDerivedObj);
+					PRINTF(strTrace);
+					free(strTrace);
+				 */
+				if(mt != NULL)
+				{
+					list_add(model_traces, mt);
+				}
+				else {
+					printf("ERROR: ModelTrace cannot be added!\n");
+					printf("path = %s  value = %s\n", path, (char*)value);
+				}
 			}
 			else if(string != NULL && string2 == NULL)
 			{
-				printf("Changing attribute to NULL\n\n");
-				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, NULL, "STRING");
-				PRINTF(mt->ToString(mt));
-				list_add(model_traces, mt);
-			}
-			else
-			{
-				printf("Both attributes are NULL, nothing to change\n\n");
+				/*printf("Changing attribute to NULL\n\n");*/
+				ModelTrace *mt = newPoly_ModelSetTrace(path, "NULL", "STRING");
+				/*char *strTrace = mt->ToString(mt->pDerivedObj);
+					PRINTF(strTrace);
+					free(strTrace);*/
+				if(mt != NULL)
+				{
+					list_add(model_traces, mt);
+				}
+				else {
+					printf("ERROR: ModelTrace cannot be added!\n");
+					printf("path = %s  value = %s\n", path, (char*)value);
+				}	printf("path = %s  value = %s\n", path, (char*)value);
 			}
 		}
 		break;
@@ -417,74 +481,139 @@ void actionUpdateDelete(char* _path, Type type, void* value)
 		path = strtok(path, "\\");
 		if(new_model->FindByPath(path, new_model) == NULL)
 		{
-			printf("path = %s  value = %d\n", path, (int)value);
-			printf("Path %s does not exist in new_model, removing...\n\n", path);
-			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (int)value, path);
-			PRINTF(mt->ToString(mt));
-			list_add(model_traces, mt);
+			/*printf("path = %s  value = %d\n", path, (int)value);
+			printf("Path %s does not exist in new_model, removing...\n\n", path);*/
+			ModelTrace *mt = newPoly_ModelRemoveTrace(path, (char*)value, path);
+			/*char *strTrace = mt->ToString(mt->pDerivedObj);
+				PRINTF(strTrace);
+				free(strTrace);*/
+			if(mt != NULL)
+			{
+				list_add(model_traces, mt);
+			}
+			else {
+				printf("ERROR: ModelTrace cannot be added!\n");
+				printf("path = %s  value = %s\n", path, (char*)value);
+			}
 		}
 		else
 		{
-			printf("path = %s  value = %d\n", _path, (int)value);
-			int v = current_model->FindByPath(_path, current_model);
-			int v2 = new_model->FindByPath(_path, new_model);
-			printf("Current attribute value: %d\n", v);
-			printf("New attribute value: %d\n", v2);
+			/*printf("path = %s  value = %d\n", _path, (int)value);*/
+			int v = (int)(current_model->FindByPath(_path, current_model));
+			int v2 = (int)(new_model->FindByPath(_path, new_model));
+			char v2str[4] = {0};
+			/*printf("Current attribute value: %d\n", v);
+			printf("New attribute value: %d\n", v2);*/
 			if(v == v2)
 			{
-				printf("Identical attributes, nothing to change...\n\n");
+				/*printf("Identical attributes, nothing to change...\n\n");*/
 			}
 			else
 			{
-				printf("Changing attribute to %d in current_model\n\n", v2);
-				ModelTrace *mt = newPoly_ModelSetTrace(path, path, path, v2, "INT");
-				PRINTF(mt->ToString(mt));
-				list_add(model_traces, mt);
+				/*printf("Changing attribute to %d in current_model\n\n", v2);*/
+				sprintf(v2str, "%d", v2);
+				ModelTrace *mt = newPoly_ModelSetTrace(path, v2str, "INT");
+				/*char *strTrace = mt->ToString(mt->pDerivedObj);
+					PRINTF(strTrace);
+					free(strTrace);*/
+				if(mt != NULL)
+				{
+					list_add(model_traces, mt);
+				}
+				else {
+					printf("ERROR: ModelTrace cannot be added!\n");
+					printf("path = %s  value = %s\n", path, (char*)value);
+				}
 			}
-
 		}
+		break;
+
+	case STRREF:
+	case BRACKET:
+	case SQBRACKET:
+	case CLOSEBRACKET:
+	case CLOSESQBRACKET:
+	case CLOSEBRACKETCOLON:
+	case CLOSESQBRACKETCOLON:
+	case COLON:
+	case RETURN:
+		printf("Type non valid!\n");
 		break;
 	}
 }
 
 void actionAdd(char* _path, Type type, void* value)
 {
-	char* path = strdup(_path);
+	char *path = strdup(_path);
+	/*
+	 * TODO return if memory is full
+	 */
 	switch(type)
 	{
 	case STRING:
-		printf("path = %s  value = %s\n", path, (char*)value);
+		/*printf("path = %s  value = %s\n", path, (char*)value);*/
 		/*path = strtok(path, "\\");*/
 		if(current_model->FindByPath(path, current_model) == NULL)
 		{
-			printf("Path %s does not exist in curent_model, adding...\n\n", path);
+			/*printf("Path %s does not exist in curent_model, adding...\n\n", path);*/
 			ModelTrace *mt = newPoly_ModelAddTrace(path, (char*)value, path, "STRING");
-			PRINTF(mt->ToString(mt));
-			list_add(model_traces, mt);
+			/*char *strTrace = mt->ToString(mt->pDerivedObj);
+				PRINTF(strTrace);
+				free(strTrace);*/
+			if(mt != NULL)
+			{
+				list_add(model_traces, mt);
+			}
+			else {
+				printf("ERROR: ModelTrace cannot be added!\n");
+				printf("path = %s  value = %s\n", path, (char*)value);
+			}
 		}
 		else
 		{
-			printf("Path %s already exists...\n", path);
+			/*printf("Path %s already exists...\n", path);*/
 		}
 		break;
 
 	case BOOL:
 	case INTEGER:
-		printf("path = %s  value = %d\n", path, (int)value);
+		/*printf("path = %s  value = %d\n", path, (int)value);*/
 		/*path = strtok(path, "\\");*/
-		if(current_model->FindByPath(path, current_model) == -1)
+		if((int)(current_model->FindByPath(path, current_model)) == -1)
 		{
-			printf("Path %s does not exist in current_model, adding...\n\n", path);
+			/*printf("Path %s does not exist in current_model, adding...\n\n", path);*/
 			ModelTrace *mt = newPoly_ModelAddTrace(path, (char*)value, path, "INT");
-			PRINTF(mt->ToString(mt));
-			list_add(model_traces, mt);
+			/*char *strTrace = mt->ToString(mt->pDerivedObj);
+				PRINTF(strTrace);
+				free(strTrace);*/
+			if(mt != NULL)
+			{
+				list_add(model_traces, mt);
+			}
+			else {
+				printf("ERROR: ModelTrace cannot be added!\n");
+				printf("path = %s  value = %s\n", path, (char*)value);
+			}
 		}
 		else
 		{
-			printf("Path %s already exists...\n", path);
+			/*printf("Path %s already exists...\n", path);*/
 		}
 		break;
+
+	case STRREF:
+	case BRACKET:
+	case SQBRACKET:
+	case CLOSEBRACKET:
+	case CLOSESQBRACKET:
+	case CLOSEBRACKETCOLON:
+	case CLOSESQBRACKETCOLON:
+	case COLON:
+	case RETURN:
+		printf("Type non valid!\n");
+		break;
 	}
+	free(path);
 }
 
 /******************************************************************************/
@@ -550,12 +679,6 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 	char modelLengthChar[10];
 	int fd_read;
 	int32_t n = 0;
-
-	/*visitor_print = (Visitor*)malloc(sizeof(Visitor));
-
-	visitor_print->action = actionstore;
-
-	modelX->Visit(modelX, visitor_print);*/
 
 	PRINTF("Entering models_handler \n");
 	PRINTF("offset: %ld\n", *offset);
@@ -760,11 +883,6 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 
 		if ((len = REST.get_request_payload(request, (const uint8_t **) &incoming)))
 		{
-			/*if ((len2 = REST.get_query_variable(request, "modelname", &filename)))
-	                {
-	                    PRINTF("File name %.*s\n", len2, filename);
-	                }*/
-
 			if (coap_req->block1_num*coap_req->block1_size+len <= sizeof(large_update_store))
 			{
 				if (coap_req->block1_num == 0)
@@ -814,46 +932,6 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 				PROCESS_CONTEXT_BEGIN(&kevoree_adaptations);
 				etimer_set(&kev_timer, CLOCK_SECOND * 2);
 				PROCESS_CONTEXT_END(&kevoree_adaptations);
-				/*process_start(&kevoree_adaptations, NULL);*/
-
-				/*char *jsonModel = malloc(modelLength + 1);
-
-				if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
-				{
-					int modelRead;
-
-					if((modelRead = cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
-					{
-						printf("new_model JSON loaded in RAM\n");
-						printf("%s\n", jsonModel);
-					}
-					else
-					{
-						printf("Empty model!\n");
-					}
-				}
-				else
-				{
-					printf("JSON model cannot be loaded\n");
-				}
-
-				struct jsonparse_state jsonState;
-
-				jsonparse_setup(&jsonState, jsonModel, modelLength + 1);
-
-				new_model = JSONKevDeserializer(&jsonState, jsonparse_next(&jsonState));
-
-				if(new_model != NULL)
-				{
-					visitor_print->action = actionUpdateDelete;
-					current_model->VisitPaths(current_model, visitor_print);
-					visitor_print->action = actionAdd;
-					new_model->VisitPaths(new_model, visitor_print);
-				}
-				else
-				{
-					printf("New model cannot be visited!\n");
-				}*/
 
 				strAcc = length = length2 = 0;
 				*offset = -1;
@@ -901,26 +979,30 @@ models_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 #endif
 
 /******************************************************************************/
-#if REST_RES_CHUNKS
+#if REST_RES_PUT
 /*
- * For data larger than REST_MAX_CHUNK_SIZE (e.g., stored in flash) resources must be aware of the buffer limitation
- * and split their responses by themselves. To transfer the complete resource through a TCP stream or CoAP's blockwise transfer,
- * the byte offset where to continue is provided to the handler as int32_t pointer.
- * These chunk-wise resources must set the offset value to its new position or -1 of the end is reached.
- * (The offset for CoAP's blockwise transfer can go up to 2'147'481'600 = ~2047 M for block size 2048 (reduced to 1024 in observe-03.)
+ * PUT in flash new application modules
  */
-RESOURCE(chunks, METHOD_GET, "test/chunks", "title=\"Blockwise demo\";rt=\"Data\"");
-
-#define CHUNKS_TOTAL    2050
+RESOURCE(putData, METHOD_PUT, "data", "tile=\"ELF MODULE: ?filename='filename.ce', PUT APPLICATION/OCTET_STREAM\"; rt=\"Control\"");
 
 void
-chunks_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
+putData_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
 {
-	int32_t strpos = 0;
+	coap_packet_t *const coap_req = (coap_packet_t*)request;
+	int fd_write = 0;
+	int fd_read = 0;
+	/*int fd_read = 0;*/
+	int n = 0;
+	const char *filename = "hello-component.ce";
+	int file_length = 0;
+	const char *binLength;
+	int iBinLength = 0;
+	uint8_t *incoming = NULL;
+	size_t len = 0;
+	size_t len2 = 0;
 
 	/* Check the offset for boundaries of the resource data. */
-	if (*offset>=CHUNKS_TOTAL)
-	{
+	if(*offset >= CHUNKS_TOTAL) {
 		REST.set_response_status(response, REST.status.BAD_OPTION);
 		/* A block error message should not exceed the minimum block size (16). */
 
@@ -929,153 +1011,172 @@ chunks_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 		return;
 	}
 
-	/* Generate data until reaching CHUNKS_TOTAL. */
-	while (strpos<preferred_size)
+	if (pref_size != 0 && coap_req->block1_num == 0)
 	{
-		strpos += snprintf((char *)buffer+strpos, preferred_size-strpos+1, "|%ld|", *offset);
+		fd_read = cfs_open(filename, CFS_READ);
+
+		if (cfs_seek(fd_read, 0, CFS_SEEK_SET) == -1)
+		{
+			PRINTF("New file can be written\n");
+		}
+		else
+		{
+			cfs_remove(filename);
+			fd_read = cfs_open(filename, CFS_READ);
+			if (fd_read == -1)
+			{
+				PRINTF("Same filename has been found, overwritting...\n");
+			}
+			else
+			{
+				PRINTF("ERROR: could read from memory, file exists.\n");
+				cfs_close(fd_read);
+			}
+		}
 	}
 
-	/* snprintf() does not adjust return value if truncated by size. */
-	if (strpos > preferred_size)
+	if ((len = REST.get_request_payload(request, (const uint8_t **) &incoming)))
 	{
-		strpos = preferred_size;
-	}
+		if ((len2 = REST.get_query_variable(request, "length", &binLength)))
+		{
+			PRINTF("String binary length = %s\n", binLength);
+			iBinLength = atoi(binLength);
+			PRINTF("Integer binary length = %d\n", iBinLength);
+		}
+		else
+		{
+			REST.set_response_status(response, REST.status.BAD_REQUEST);
+			const char *error_msg = "ModelLengthReq";
+			REST.set_response_payload(response, error_msg, strlen(error_msg));
+			PRINTF("ERROR: Model length required.\n");
+			return;
+		}
 
-	/* Truncate if above CHUNKS_TOTAL bytes. */
-	if (*offset+(int32_t)strpos > CHUNKS_TOTAL)
-	{
-		strpos = CHUNKS_TOTAL - *offset;
-	}
+		if (coap_req->block1_num*coap_req->block1_size+len <= sizeof(large_update_store))
+		{
+			if (coap_req->block1_num == 0)
+			{
+				fd_write = cfs_open(filename, CFS_WRITE);
+				PRINTF("Writing data...\n");
+			}
+			else
+			{
+				fd_write = cfs_open(filename, CFS_WRITE | CFS_APPEND);
+				PRINTF("Appending data...\n");
+			}
 
-	REST.set_response_payload(response, buffer, strpos);
+			if(fd_write != -1)
+			{
+				n = cfs_write(fd_write, incoming, len);
+				cfs_close(fd_write);
+				length += n;
+				PRINTF("Successfully appended data to cfs. wrote %d bytes, Acc = %ld\n", n, length);
+			}
+			else
+			{
+				REST.set_response_status(response, REST.status.BAD_OPTION);
+				/* A block error message should not exceed the minimum block size (16). */
+				const char *error_msg = "CannotWriteCFS";
+				REST.set_response_payload(response, error_msg, strlen(error_msg));
+				PRINTF("ERROR: could not write to memory \n");
+				return;
+			}
 
-	/* IMPORTANT for chunk-wise resources: Signal chunk awareness to REST engine. */
-	*offset += strpos;
+			large_update_size = coap_req->block1_num*coap_req->block1_size+len;
+			large_update_ct = REST.get_header_content_type(request);
 
-	/* Signal end of resource representation. */
-	if (*offset>=CHUNKS_TOTAL)
-	{
-		*offset = -1;
-	}
-}
-#endif
+			REST.set_response_status(response, REST.status.CHANGED);
+			coap_set_header_block1(response, coap_req->block1_num, 0, coap_req->block1_size);
 
-/******************************************************************************/
-#if REST_RES_PUSHING
-/*
- * Example for a periodic resource.
- * It takes an additional period parameter, which defines the interval to call [name]_periodic_handler().
- * A default post_handler takes care of subscriptions by managing a list of subscribers to notify.
- */
-PERIODIC_RESOURCE(pushing, METHOD_GET, "test/push", "title=\"Periodic demo\";obs", 5*CLOCK_SECOND);
+			PRINTF("Chunk num. : %ld Size: %d \n", coap_req->block1_num, coap_req->block1_size);
+		}
+		else
+		{
+			REST.set_response_status(response, REST.status.REQUEST_ENTITY_TOO_LARGE);
+			REST.set_response_payload(response, buffer, snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "%uB max.", sizeof(large_update_store)));
+			return;
+		}
 
-void
-pushing_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
-{
-	REST.set_header_content_type(response, REST.type.TEXT_PLAIN);
+		if(iBinLength == length)
+		{
+			printf("File transferred successfully\n");
 
-	/* Usually, a CoAP server would response with the resource representation matching the periodic_handler. */
-	const char *msg = "It's periodic!";
-	REST.set_response_payload(response, msg, strlen(msg));
+			/* Kill any old processes. */
+			if(elfloader_autostart_processes != NULL) {
+				autostart_exit(elfloader_autostart_processes);
+			}
 
-	/* A post_handler that handles subscriptions will be called for periodic resources by the REST framework. */
-}
+			int fd;
+			int ret;
+			fd = cfs_open(filename, CFS_READ | CFS_WRITE);
+			if (fd != -1)
+			{
+				ret = elfloader_load(fd);
+				PRINTF("ret value:%d\n", ret);
+				PRINTF("%s\n", elfloader_unknown);
+				cfs_close(fd);
 
-/*
- * Additionally, a handler function named [resource name]_handler must be implemented for each PERIODIC_RESOURCE.
- * It will be called by the REST manager process with the defined period.
- */
-void
-pushing_periodic_handler(resource_t *r)
-{
-	static uint16_t obs_counter = 0;
-	static char content[11];
+				if(ret == ELFLOADER_OK || ret == ELFLOADER_NO_STARTPOINT)
+				{
+					int i;
+					autostart_start(elfloader_autostart_processes);
+					PRINTF("ELF loaded!\n");
+					PROCESS_CONTEXT_BEGIN(&instantiator);
+					etimer_set(&inst_timer, CLOCK_SECOND * 2);
+					PROCESS_CONTEXT_END(&instantiator);
+				}
+				else
+				{
+					PRINTF("ELF cannot be loaded!\n");
+					PRINTF("ERROR: %d\n", ret);
+				}
+			}
+			else
+				PRINTF("Cannot load module\n");
 
-	++obs_counter;
+			strAcc = length = length2 = 0;
+			*offset = -1;
+			PRINTF("strAcc: %ld, length: %ld, length2: %ld, *offset: %ld\n", strAcc, length, length2, *offset);
+		}
+		else if(length > iBinLength)
+		{
+			printf("Error transferring file!\n");
+			if((fd_write = cfs_open(filename, CFS_READ)))
+			{
+				cfs_remove(filename);
+				if (!(fd_write = cfs_open(filename, CFS_READ)))
+				{
+					printf("%s deleted...\n", filename);
+				}
+				else
+				{
+					printf("ERROR: could read from memory, file exists.\n");
+					cfs_close(fd_write);
+				}
+			}
+			else
+			{
+				printf("ERROR: could not read from memory, file does not exist.\n");
+			}
 
-	PRINTF("TICK %u for /%s\n", obs_counter, r->url);
-
-	/* Build notification. */
-	coap_packet_t notification[1]; /* This way the packet can be treated as pointer as usual. */
-	coap_init_message(notification, COAP_TYPE_NON, REST.status.OK, 0 );
-	coap_set_payload(notification, content, snprintf(content, sizeof(content), "TICK %u", obs_counter));
-
-	/* Notify the registered observers with the given message type, observe option, and payload. */
-	REST.notify_subscribers(r, obs_counter, notification);
-}
-#endif
-
-/******************************************************************************/
-#if REST_RES_EVENT && defined (PLATFORM_HAS_BUTTON)
-/*
- * Example for an event resource.
- * Additionally takes a period parameter that defines the interval to call [name]_periodic_handler().
- * A default post_handler takes care of subscriptions and manages a list of subscribers to notify.
- */
-EVENT_RESOURCE(event, METHOD_GET, "sensors/button", "title=\"Event demo\";obs");
-
-void
-event_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
-{
-	REST.set_header_content_type(response, REST.type.TEXT_PLAIN);
-	/* Usually, a CoAP server would response with the current resource representation. */
-	const char *msg = "It's eventful!";
-	REST.set_response_payload(response, (uint8_t *)msg, strlen(msg));
-
-	/* A post_handler that handles subscriptions/observing will be called for periodic resources by the framework. */
-}
-
-/* Additionally, a handler function named [resource name]_event_handler must be implemented for each PERIODIC_RESOURCE defined.
- * It will be called by the REST manager process with the defined period. */
-void
-event_event_handler(resource_t *r)
-{
-	static uint16_t event_counter = 0;
-	static char content[12];
-
-	++event_counter;
-
-	PRINTF("TICK %u for /%s\n", event_counter, r->url);
-
-	/* Build notification. */
-	coap_packet_t notification[1]; /* This way the packet can be treated as pointer as usual. */
-	coap_init_message(notification, COAP_TYPE_CON, REST.status.OK, 0 );
-	coap_set_payload(notification, content, snprintf(content, sizeof(content), "EVENT %u", event_counter));
-
-	/* Notify the registered observers with the given message type, observe option, and payload. */
-	REST.notify_subscribers(r, event_counter, notification);
-}
-#endif /* PLATFORM_HAS_BUTTON */
-
-/******************************************************************************/
-#if REST_RES_SUB
-/*
- * Example for a resource that also handles all its sub-resources.
- * Use REST.get_url() to multiplex the handling of the request depending on the Uri-Path.
- */
-RESOURCE(sub, METHOD_GET | HAS_SUB_RESOURCES, "test/path", "title=\"Sub-resource demo\"");
-
-void
-sub_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
-{
-	REST.set_header_content_type(response, REST.type.TEXT_PLAIN);
-
-	const char *uri_path = NULL;
-	int len = REST.get_url(request, &uri_path);
-	int base_len = strlen(resource_sub.url);
-
-	if (len==base_len)
-	{
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "Request any sub-resource of /%s", resource_sub.url);
+			strAcc = length = length2 = 0;
+			*offset = -1;
+			REST.set_response_status(response, REST.status.BAD_REQUEST);
+			const char *error_msg = "IncorrectSize";
+			REST.set_response_payload(response, error_msg, strlen(error_msg));
+			return;
+		}
 	}
 	else
 	{
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, ".%.*s", len-base_len, uri_path+base_len);
+		REST.set_response_status(response, REST.status.BAD_REQUEST);
+		const char *error_msg = "NoPayload";
+		REST.set_response_payload(response, error_msg, strlen(error_msg));
+		return;
 	}
-
-	REST.set_response_payload(response, buffer, strlen((char *)buffer));
 }
 #endif
+
 
 /******************************************************************************/
 #if defined (PLATFORM_HAS_LEDS)
@@ -1140,200 +1241,114 @@ toggle_handler(void* request, void* response, uint8_t *buffer, uint16_t preferre
 }
 #endif
 #endif /* PLATFORM_HAS_LEDS */
-
 /******************************************************************************/
-#if REST_RES_LIGHT && defined (PLATFORM_HAS_LIGHT)
-/* A simple getter example. Returns the reading from light sensor with a simple etag */
-RESOURCE(light, METHOD_GET, "sensors/light", "title=\"Photosynthetic and solar light (supports JSON)\";rt=\"LightSensor\"");
-void
-light_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
+
+PROCESS_THREAD(instantiator, ev, data)
 {
-	uint16_t light_photosynthetic = light_sensor.value(LIGHT_SENSOR_PHOTOSYNTHETIC);
-	uint16_t light_solar = light_sensor.value(LIGHT_SENSOR_TOTAL_SOLAR);
+	PROCESS_BEGIN();
+	PRINTF("Process instantiaton started!\n");
+	int i;
 
-	const uint16_t *accept = NULL;
-	int num = REST.get_header_accept(request, &accept);
+	while(1){
+		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&inst_timer));
+		for (i = 0; elfloader_autostart_processes[i] != NULL; ++i) {
+			PRINTF("Process %s is present\n", elfloader_autostart_processes[i]->name);
+			if(!strcmp(elfloader_autostart_processes[i]->name, "kev_contiki//hello_world/0.0.1"))
+			{
+				PRINTF("INFO: Process \"kev_contiki//hello_world/0.0.1\" found!\n");
+				PRINTF("Sending pointer %p\n", &compPointer);
+				process_post_synch(elfloader_autostart_processes[i], PROCESS_EVENT_POLL, &compPointer);
+				etimer_set(&process_timer, CLOCK_SECOND * 2);
 
-	if ((num==0) || (num && accept[0]==REST.type.TEXT_PLAIN))
-	{
-		REST.set_header_content_type(response, REST.type.TEXT_PLAIN);
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "%u;%u", light_photosynthetic, light_solar);
-
-		REST.set_response_payload(response, (uint8_t *)buffer, strlen((char *)buffer));
-	}
-	else if (num && (accept[0]==REST.type.APPLICATION_XML))
-	{
-		REST.set_header_content_type(response, REST.type.APPLICATION_XML);
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "<light photosynthetic=\"%u\" solar=\"%u\"/>", light_photosynthetic, light_solar);
-
-		REST.set_response_payload(response, buffer, strlen((char *)buffer));
-	}
-	else if (num && (accept[0]==REST.type.APPLICATION_JSON))
-	{
-		REST.set_header_content_type(response, REST.type.APPLICATION_JSON);
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "{'light':{'photosynthetic':%u,'solar':%u}}", light_photosynthetic, light_solar);
-
-		REST.set_response_payload(response, buffer, strlen((char *)buffer));
-	}
-	else
-	{
-		REST.set_response_status(response, REST.status.NOT_ACCEPTABLE);
-		const char *msg = "Supporting content-types text/plain, application/xml, and application/json";
-		REST.set_response_payload(response, msg, strlen(msg));
-	}
-}
-#endif /* PLATFORM_HAS_LIGHT */
-
-/******************************************************************************/
-#if REST_RES_BATTERY && defined (PLATFORM_HAS_BATTERY)
-/* A simple getter example. Returns the reading from light sensor with a simple etag */
-RESOURCE(battery, METHOD_GET, "sensors/battery", "title=\"Battery status\";rt=\"Battery\"");
-void
-battery_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
-{
-	int battery = battery_sensor.value(0);
-
-	const uint16_t *accept = NULL;
-	int num = REST.get_header_accept(request, &accept);
-
-	if ((num==0) || (num && accept[0]==REST.type.TEXT_PLAIN))
-	{
-		REST.set_header_content_type(response, REST.type.TEXT_PLAIN);
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "%d", battery);
-
-		REST.set_response_payload(response, (uint8_t *)buffer, strlen((char *)buffer));
-	}
-	else if (num && (accept[0]==REST.type.APPLICATION_JSON))
-	{
-		REST.set_header_content_type(response, REST.type.APPLICATION_JSON);
-		snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "{'battery':%d}", battery);
-
-		REST.set_response_payload(response, buffer, strlen((char *)buffer));
-	}
-	else
-	{
-		REST.set_response_status(response, REST.status.NOT_ACCEPTABLE);
-		const char *msg = "Supporting content-types text/plain and application/json";
-		REST.set_response_payload(response, msg, strlen(msg));
-	}
-}
-#endif /* PLATFORM_HAS_BATTERY */
-
-
-#if defined (PLATFORM_HAS_RADIO) && REST_RES_RADIO
-/* A simple getter example. Returns the reading of the rssi/lqi from radio sensor */
-RESOURCE(radio, METHOD_GET, "sensor/radio", "title=\"RADIO: ?p=lqi|rssi\";rt=\"RadioSensor\"");
-
-void
-radio_handler(void* request, void* response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset)
-{
-	size_t len = 0;
-	const char *p = NULL;
-	uint8_t param = 0;
-	int success = 1;
-
-	const uint16_t *accept = NULL;
-	int num = REST.get_header_accept(request, &accept);
-
-	if ((len=REST.get_query_variable(request, "p", &p))) {
-		PRINTF("p %.*s\n", len, p);
-		if (strncmp(p, "lqi", len)==0) {
-			param = RADIO_SENSOR_LAST_VALUE;
-		} else if(strncmp(p,"rssi", len)==0) {
-			param = RADIO_SENSOR_LAST_PACKET;
-		} else {
-			success = 0;
-		}
-	} else {
-		success = 0;
-	}
-
-	if (success) {
-		if ((num==0) || (num && accept[0]==REST.type.TEXT_PLAIN))
-		{
-			REST.set_header_content_type(response, REST.type.TEXT_PLAIN);
-			snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "%d", radio_sensor.value(param));
-
-			REST.set_response_payload(response, (uint8_t *)buffer, strlen((char *)buffer));
-		}
-		else if (num && (accept[0]==REST.type.APPLICATION_JSON))
-		{
-			REST.set_header_content_type(response, REST.type.APPLICATION_JSON);
-
-			if (param == RADIO_SENSOR_LAST_VALUE) {
-				snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "{'lqi':%d}", radio_sensor.value(param));
-			} else if (param == RADIO_SENSOR_LAST_PACKET) {
-				snprintf((char *)buffer, REST_MAX_CHUNK_SIZE, "{'rssi':%d}", radio_sensor.value(param));
+				PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&process_timer));
+				PRINTF("Receiving pointer %p\n", &compPointer);
+				AbstractTypeDefinition *comp;
+				comp = (AbstractTypeDefinition*)compPointer;
+				if(comp != NULL) {
+					comp->start(comp);
+				}
+				else
+					PRINTF("ERROR: Cannot create instance!\n");
 			}
+			else
+			{
+				PRINTF("ERROR: Process not found!\n");
+			}
+		}
+	}
 
-			REST.set_response_payload(response, buffer, strlen((char *)buffer));
+	PROCESS_END();
+}
+
+uip_ipaddr_t server_ipaddr;
+
+void
+client_chunk_handler(void *response)
+{
+	const uint8_t *chunk;
+
+	int len = coap_get_payload(response, &chunk);
+
+	int fd = -1;
+
+	/*
+	 * POC
+	 */
+
+	if((fd = cfs_open("new_component", CFS_WRITE | CFS_APPEND)))
+	{
+		int err;
+		if((err = cfs_write(fd, chunk, len)))
+		{
+			PRINTF("Successfully appended %d bytes of component data!\n", len);
 		}
 		else
 		{
-			REST.set_response_status(response, REST.status.NOT_ACCEPTABLE);
-			const char *msg = "Supporting content-types text/plain and application/json";
-			REST.set_response_payload(response, msg, strlen(msg));
+			PRINTF("Writing binary data failed!\n");
+			PRINTF("ERROR: %d", err);
 		}
-	} else {
-		REST.set_response_status(response, REST.status.BAD_REQUEST);
 	}
+
+
 }
-#endif
 
-PROCESS(rest_server_example, "Erbium Example Server");
-AUTOSTART_PROCESSES(&rest_server_example);
-
-PROCESS_THREAD(kevoree_adaptations, event, dt)
+PROCESS_THREAD(kevoree_adaptations, ev, dt)
 {
 	PROCESS_BEGIN();
+
+	int binLength = 0;
+
+	static coap_packet_t request[1]; /* This way the packet can be treated as pointer as usual. */
+	SERVER_NODE(&server_ipaddr);
+	coap_receiver_init();
+
 	while(1)
 	{
 		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&kev_timer));
 
 		int fd_read = -1;
 		int listLength = 0;
+		int i;
+		bool isFirst = true;
 
 		printf("Starting Kevoree adaptations\n");
-		printf("Trying to load new_model with length %d\n", modelLength);
+		printf("INFO: Trying to load new_model with length %d\n", modelLength);
 
 		char *jsonModel = malloc(modelLength + 1);
-
-		/*if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
-	{
-		int modelRead;
-
-		if((modelRead = cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
-		{
-			printf("new_model JSON loaded in RAM\n");
-			printf("%s\n", jsonModel);
-		}
-		else
-		{
-			printf("Empty model!\n");
-		}
-	}
-	else
-	{
-		printf("JSON model cannot be loaded\n");
-	}*/
 
 		if((fd_read = cfs_open(new_modelname, CFS_READ)) != -1)
 		{
 			length = cfs_seek(fd_read, 0 , CFS_SEEK_END);
 			cfs_seek(fd_read, 0, CFS_SEEK_SET);
 
-			/*printf("new_model loaded with length: %ld \n", length);*/
-			/*char *buf = malloc(length);
-			cfs_read(fd_read, buf, strlen(buf));
-			printf("%s", buf);*/
 			if((cfs_read(fd_read, jsonModel, modelLength + 1)) != -1)
 			{
-				printf("new_model JSON loaded in RAM\n");
-				printf("%s\n", jsonModel);
+				printf("INFO: new_model JSON loaded in RAM\n");
+				/*printf("%s\n", jsonModel);*/
 			}
 			else
 			{
-				printf("Empty model!\n");
+				printf("ERROR: Empty model!\n");
 			}
 
 		}
@@ -1346,21 +1361,17 @@ PROCESS_THREAD(kevoree_adaptations, event, dt)
 
 		if(new_model != NULL)
 		{
-			printf("new_model loaded successfully!\n");
-			/*etimer_set(&timer, CLOCK_CONF_SECOND);*/
+			printf("INFO: new_model loaded successfully!\n");
 		}
 		else
 		{
-			printf("new_model cannot be loaded\n");
+			printf("ERROR: new_model cannot be loaded\n");
 		}
 
 
 		if(new_model != NULL)
 		{
-			printf("new_model detected, comparing with curent_model\n\n");
-			visitor_print->action = actionprintf;
-			/*current_model->Visit(current_model, visitor_print);*/
-			new_model->Visit(new_model, visitor_print);
+			printf("INFO: new_model detected, comparing with curent_model\n\n");
 			visitor_print->action = actionUpdateDelete;
 			current_model->VisitPaths(current_model, visitor_print);
 			visitor_print->action = actionAdd;
@@ -1368,31 +1379,91 @@ PROCESS_THREAD(kevoree_adaptations, event, dt)
 
 			if((listLength = list_length(model_traces)))
 			{
-				PRINTF("Creating TraceSequences!\n");
+				/*PRINTF("Creating TraceSequences!\n");
 				TraceSequence *ts = new_TraceSequence();
 				ts->populate(ts, model_traces);
-				printf(ts->toString(ts));
+				printf(ts->toString(ts));*/
+				ModelTrace *mt;
+
+				for (i = 0; i < listLength; ++i) {
+					if(isFirst)
+					{
+						mt = list_head(model_traces);
+						char *strTrace = mt->ToString(mt->pDerivedObj);
+						PRINTF(strTrace);
+						free(strTrace);
+						isFirst = false;
+					}
+					else {
+						mt = list_item_next(mt);
+						char *strTrace = mt->ToString(mt->pDerivedObj);
+						PRINTF(strTrace);
+						free(strTrace);
+					}
+				}
 			}
 		}
 		else
 		{
-			printf("New model cannot be visited!\n");
+			printf("ERROR: New model cannot be visited!\n");
 		}
 
 		free(jsonModel);
+
+		coap_init_message(request, COAP_TYPE_CON, COAP_GET, 0);
+		coap_set_header_uri_path(request, "CoAPKev/");
+
+		printf("INFO: Requesting CoAPKev/\n");
+
+		PRINT6ADDR(&server_ipaddr);
+		PRINTF(" : %u\n", UIP_HTONS(REMOTE_PORT));
+
+		COAP_BLOCKING_REQUEST(&server_ipaddr, REMOTE_PORT, request, client_chunk_handler);
+
+		printf("\n INFO: Done\n");
+
+		if((fd_read = cfs_open("new_component", CFS_READ)))
+		{
+			binLength = cfs_seek(fd_read, 0 , CFS_SEEK_END);
+			cfs_seek(fd_read, 0, CFS_SEEK_SET);
+			PRINTF("INFO: Received binary of length %d\n", binLength);
+		}
+		else
+		{
+			PRINTF("ERROR: Component cannot be received!\n");
+		}
+
 	}
 
 	PROCESS_END();
 }
 
+AUTOSTART_PROCESSES(&rest_server_example);
 PROCESS_THREAD(rest_server_example, ev, data)
 {
 	process_start(&kevoree_adaptations, NULL);
-	/*cfs_coffee_format();*/
+	process_start(&instantiator, NULL);
+	elfloader_init();
+
+	int fd_read;
+
+	if((fd_read = cfs_open("hello-component.ce", CFS_READ)) != -1) {
+		printf("INFO: removing component \"hello-component.ce\"\n");
+		if(!cfs_remove("hello-component.ce")) {
+			printf("Success!\n");
+		} else {
+			printf("ERROR: cannot remove component!\n");
+		}
+	}
+
+	AbstractTypeDefinition *dummy = newPoly_AbstractComponent();
+	if(dummy != NULL) {
+		dummy->delete(dummy);
+	}
+
 	PROCESS_BEGIN();
 
 	print_local_addresses();
-	int fd_read;
 
 	if((fd_read = cfs_open(modelname, CFS_READ)) != -1)
 	{
@@ -1450,28 +1521,6 @@ PROCESS_THREAD(rest_server_example, ev, data)
 #if REST_RES_HELLO
 	rest_activate_resource(&resource_helloworld);
 #endif
-#if REST_RES_MIRROR
-	rest_activate_resource(&resource_mirror);
-#endif
-#if REST_RES_CHUNKS
-	rest_activate_resource(&resource_chunks);
-#endif
-#if REST_RES_PUSHING
-	rest_activate_periodic_resource(&periodic_resource_pushing);
-#endif
-#if defined (PLATFORM_HAS_BUTTON) && REST_RES_EVENT
-	rest_activate_event_resource(&resource_event);
-#endif
-#if defined (PLATFORM_HAS_BUTTON) && REST_RES_SEPARATE && WITH_COAP > 3
-	/* No pre-handler anymore, user coap_separate_accept() and coap_separate_reject(). */
-	rest_activate_resource(&resource_separate);
-#endif
-#if defined (PLATFORM_HAS_BUTTON) && (REST_RES_EVENT || (REST_RES_SEPARATE && WITH_COAP > 3))
-	SENSORS_ACTIVATE(button_sensor);
-#endif
-#if REST_RES_SUB
-	rest_activate_resource(&resource_sub);
-#endif
 #if defined (PLATFORM_HAS_LEDS)
 #if REST_RES_LEDS
 	rest_activate_resource(&resource_leds);
@@ -1480,22 +1529,12 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	rest_activate_resource(&resource_toggle);
 #endif
 #endif /* PLATFORM_HAS_LEDS */
-#if defined (PLATFORM_HAS_LIGHT) && REST_RES_LIGHT
-	SENSORS_ACTIVATE(light_sensor);
-	rest_activate_resource(&resource_light);
-#endif
-#if defined (PLATFORM_HAS_BATTERY) && REST_RES_BATTERY
-	SENSORS_ACTIVATE(battery_sensor);
-	rest_activate_resource(&resource_battery);
-#endif
-#if defined (PLATFORM_HAS_RADIO) && REST_RES_RADIO
-	SENSORS_ACTIVATE(radio_sensor);
-	rest_activate_resource(&resource_radio);
-#endif
 #if REST_RES_MODELS
 	rest_activate_resource(&resource_models);
 #endif
-
+#if REST_RES_PUT
+	rest_activate_resource(&resource_putData);
+#endif
 	/* NeworkProperty front
 	NetworkProperty* contikiNodeFront = new_NetworkProperty();
 	contikiNodeFront->super->name = malloc(sizeof(char) * (strlen("front")) + 1);
@@ -1597,24 +1636,24 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		ctFakeConsole->factoryBean = malloc(sizeof(char) * (strlen("")) + 1);
   		strcpy(ctFakeConsole->factoryBean, "");*/
 
-	/* TypeDefinition HelloWorldType */
+	/* TypeDefinition HelloWorldType
 	TypeDefinition* ctHelloWorld = newPoly_ComponentType();
 	ctHelloWorld->abstract = false;
-	ctHelloWorld->super->name = malloc(sizeof(char) * (strlen("HelloWorld")) + 1);
-	strcpy(ctHelloWorld->super->name, "HelloWorld");
+	ctHelloWorld->super->name = malloc(sizeof(char) * (strlen("hello_world")) + 1);
+	strcpy(ctHelloWorld->super->name, "hello_world");
 	ctHelloWorld->version = malloc(sizeof(char) * (strlen("0.0.1")) + 1);
 	strcpy(ctHelloWorld->version, "0.0.1");
 	ctHelloWorld->bean = malloc(sizeof(char) * (strlen("")) + 1);
 	strcpy(ctHelloWorld->bean, "");
 	ctHelloWorld->factoryBean = malloc(sizeof(char) * (strlen("")) + 1);
-	strcpy(ctHelloWorld->factoryBean, "");
+	strcpy(ctHelloWorld->factoryBean, "");*/
 
 	/* TypeLibrary Contiki */
 	TypeLibrary* contiki = new_TypeLibrary();
 	contiki->super->name = malloc(sizeof(char) * (strlen("ContikiLib")) + 1);
 	strcpy(contiki->super->name, "ContikiLib");
 	/*contiki->AddSubTypes(contiki, ctFakeConsole);*/
-	contiki->AddSubTypes(contiki, ctHelloWorld);
+	/*contiki->AddSubTypes(contiki, ctHelloWorld);*/
 	contiki->AddSubTypes(contiki, contikiNodeType);
 	contiki->AddSubTypes(contiki, coapGroupType);
 
@@ -1689,16 +1728,16 @@ PROCESS_THREAD(rest_server_example, ev, data)
   	fdContikiNode->super->AddValues(fdContikiNode->super, dvPortContikiNode);*/
 
 	/* ComponentType DictionaryAttribute FakeConsole
-  		DictionaryAttribute* daFakeConsoleProxy = new_DictionaryAttribute();
-  		daFakeConsoleProxy->fragmentDependant = false;
-  		daFakeConsoleProxy->optional = true;
-  		daFakeConsoleProxy->super->super->name = malloc(sizeof(char) * (strlen("proxy")) + 1);
-  		strcpy(daFakeConsoleProxy->super->super->name, "proxy");
-  		daFakeConsoleProxy->state = false;
-  		daFakeConsoleProxy->datatype = malloc(sizeof(char) * (strlen("boolean")) + 1);
-  		strcpy(daFakeConsoleProxy->datatype, "boolean");
-  		daFakeConsoleProxy->defaultValue = malloc(sizeof(char) * (strlen("false")) + 1);
-  		strcpy(daFakeConsoleProxy->defaultValue, "false");*/
+	DictionaryAttribute *daHelloWorld = new_DictionaryAttribute();
+	daHelloWorld->fragmentDependant = false;
+	daHelloWorld->optional = false;
+	daHelloWorld->super->super->name = malloc(sizeof(char) * (strlen("time")) + 1);
+	strcpy(daHelloWorld->super->super->name, "time");
+	daHelloWorld->state = false;
+	daHelloWorld->datatype = malloc(sizeof(char) * (strlen("int")) + 1);
+	strcpy(daHelloWorld->datatype, "int");
+	daHelloWorld->defaultValue = malloc(sizeof(char) * (strlen("5")) + 1);
+	strcpy(daHelloWorld->defaultValue, "5");*/
 
 	/* ChannelType DictionaryAttribute host
   	DictionaryAttribute* chanDicoAttrHost = new_DictionaryAttribute();
@@ -1784,12 +1823,12 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		gtDicAttrProxy->defaultValue = malloc(sizeof(char) * (strlen("")) + 1);
   		strcpy(gtDicAttrProxy->defaultValue, "9000");*/
 
-	/* ComponentInstance DictionaryType FakeConsole
-  		DictionaryType* dtFakeConsole = new_DictionaryType();
-  		dtFakeConsole->AddAttributes(dtFakeConsole, daFakeConsoleProxy);*/
-
-	/* ComponentInstance DictionaryType HelloWorld */
+	/* ComponentInstance DictionaryType HelloWorld
 	DictionaryType* dtHelloWorld = new_DictionaryType();
+	dtHelloWorld->AddAttributes(dtHelloWorld, daHelloWorld);*/
+
+	/* ComponentInstance DictionaryType HelloWorld
+	DictionaryType* dtHelloWorld = new_DictionaryType();*/
 
 	/* GroupType DictionaryType */
 	DictionaryType* gtDicType = new_DictionaryType();
@@ -1863,12 +1902,12 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		duFakeConsole->type = malloc(sizeof(char) * (strlen("ce")) + 1);
   		strcpy(duFakeConsole->type,"ce");*/
 
-	/* DeployUnit //kevoree-comp-helloworld/0.0.1 */
+	/* DeployUnit //kevoree-comp-helloworld/0.0.1
 	DeployUnit* duHelloWorld = new_DeployUnit();
-	duHelloWorld->super->name = malloc(sizeof(char) * (strlen("kevoree-comp-blink")) + 1);
-	strcpy(duHelloWorld->super->name, "kevoree-comp-blink");
+	duHelloWorld->super->name = malloc(sizeof(char) * (strlen("hello_world")) + 1);
+	strcpy(duHelloWorld->super->name, "hello_world");
 	duHelloWorld->groupName = malloc(sizeof(char) * (strlen("")) + 1);
-	strcpy(duHelloWorld->groupName, "");
+	strcpy(duHelloWorld->groupName, "kev_contiki");
 	duHelloWorld->hashcode = malloc(sizeof(char) * (strlen("")) + 1);
 	strcpy(duHelloWorld->hashcode, "");
 	duHelloWorld->version = malloc(sizeof(char) * (strlen("0.0.1")) + 1);
@@ -1876,7 +1915,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	duHelloWorld->url = malloc(sizeof(char) * (strlen("")) + 1);
 	strcpy(duHelloWorld->url, "");
 	duHelloWorld->type = malloc(sizeof(char) * (strlen("ce")) + 1);
-	strcpy(duHelloWorld->type,"ce");
+	strcpy(duHelloWorld->type,"ce");*/
 
 	/* PortTypeRef sendMsg
   		PortTypeRef* ptrSendMsg = new_PortTypeRef();
@@ -2019,13 +2058,13 @@ PROCESS_THREAD(rest_server_example, ev, data)
   		serverNode->AddComponents(serverNode, ciHelloWorld);
 
   		ctFakeConsole->AddDeployUnit(ctFakeConsole, duFakeConsole);*/
-	ctHelloWorld->AddDeployUnit(ctHelloWorld, duHelloWorld);
+	/*ctHelloWorld->AddDeployUnit(ctHelloWorld, duHelloWorld);*/
 	contikiNodeType->AddDeployUnit(contikiNodeType, kevContikiNode);
 	coapGroupType->AddDeployUnit(coapGroupType, kevGroupCoap);
 	/*coapChanType->AddDeployUnit(coapChanType, kevChanCoap);*/
 
 	/*ctFakeConsole->AddDictionaryType(ctFakeConsole, dtFakeConsole);*/
-	ctHelloWorld->AddDictionaryType(ctHelloWorld, dtHelloWorld);
+	/*ctHelloWorld->AddDictionaryType(ctHelloWorld, dtHelloWorld);*/
 	coapGroupType->AddDictionaryType(coapGroupType, gtDicType);
 	/*coapChanType->AddDictionaryType(coapChanType, chanDicType);*/
 
@@ -2047,13 +2086,13 @@ PROCESS_THREAD(rest_server_example, ev, data)
 	/*type definition*/
 	current_model->AddTypeDefinitions(current_model, contikiNodeType);
 	current_model->AddTypeDefinitions(current_model, coapGroupType);
-	current_model->AddTypeDefinitions(current_model, ctHelloWorld);
+	/*current_model->AddTypeDefinitions(current_model, ctHelloWorld);*/
 
 	/*deploy unit*/
 	/*modelX->AddDeployUnits(modelX, duHelloWorld);*/
 	current_model->AddDeployUnits(current_model, kevContikiNode);
 	current_model->AddDeployUnits(current_model, kevGroupCoap);
-	current_model->AddDeployUnits(current_model, duHelloWorld);
+	/*current_model->AddDeployUnits(current_model, duHelloWorld);*/
 
 
 	/*instances*/
@@ -2076,25 +2115,25 @@ PROCESS_THREAD(rest_server_example, ev, data)
 		contikiNode->AddNetworkInformation(contikiNode, serverNodeIP);
 		contikiNode->super->AddTypeDefinition(contikiNode->super, contikiNodeType);
 		contikiNode->AddGroups(contikiNode, coapGroup);
-
-		for(j = 0; j < 1; j++)
-		{
-			ComponentInstance* ciHelloWorld = new_ComponentInstance();
-			ciHelloWorld->super->super->name = malloc(sizeof(char) * (strlen("HelloWorldXX")) + 1);
-			sprintf(ciHelloWorld->super->super->name, "HelloWorld%d", j);
-			ciHelloWorld->super->metaData = malloc(sizeof(char) * (strlen("")) + 1);
-			strcpy(ciHelloWorld->super->metaData, "");
-			ciHelloWorld->super->started = true;
-			ciHelloWorld->super->AddTypeDefinition(ciHelloWorld->super, ctHelloWorld);
-
-			/*((ComponentType*)ctHelloWorld->pDerivedObj)->AddProvided(ctHelloWorld->pDerivedObj, ptrFake);
-			((ComponentType*)ctHelloWorld->pDerivedObj)->AddRequired(ctHelloWorld->pDerivedObj, ptrSendText);
-			contikiNode->AddComponents(contikiNode, ciHelloWorld);
-			ciHelloWorld->AddProvided(ciHelloWorld, pFake);
-			ciHelloWorld->AddRequired(ciHelloWorld, pSendText);*/
-			contikiNode->AddComponents(contikiNode, ciHelloWorld);
-		}
-
+		//
+		//		for(j = 0; j < 1; j++)
+		//		{
+		//			ComponentInstance* ciHelloWorld = new_ComponentInstance();
+		//			ciHelloWorld->super->super->name = malloc(sizeof(char) * (strlen("HelloWorldXX")) + 1);
+		//			sprintf(ciHelloWorld->super->super->name, "HelloWorld%d", j);
+		//			ciHelloWorld->super->metaData = malloc(sizeof(char) * (strlen("")) + 1);
+		//			strcpy(ciHelloWorld->super->metaData, "");
+		//			ciHelloWorld->super->started = true;
+		//			ciHelloWorld->super->AddTypeDefinition(ciHelloWorld->super, ctHelloWorld);
+		//
+		//			/*((ComponentType*)ctHelloWorld->pDerivedObj)->AddProvided(ctHelloWorld->pDerivedObj, ptrFake);
+		//			((ComponentType*)ctHelloWorld->pDerivedObj)->AddRequired(ctHelloWorld->pDerivedObj, ptrSendText);
+		//			contikiNode->AddComponents(contikiNode, ciHelloWorld);
+		//			ciHelloWorld->AddProvided(ciHelloWorld, pFake);
+		//			ciHelloWorld->AddRequired(ciHelloWorld, pSendText);*/
+		//			contikiNode->AddComponents(contikiNode, ciHelloWorld);
+		//		}
+		//
 		coapGroup->AddSubNodes(coapGroup, contikiNode);
 
 
@@ -2117,74 +2156,15 @@ PROCESS_THREAD(rest_server_example, ev, data)
 		cfs_seek(fd_read, 0, CFS_SEEK_SET);
 
 		printf("Model created with length: %ld \n", length);
-		/*char *buf = malloc(length);
-		cfs_read(fd_read, buf, strlen(buf));
-		printf("%s", buf);*/
-
+		length = 0;
 	}
 
-	/*Visitor *visitPaths = (Visitor*)malloc(sizeof(Visitor));
-
-	visitPaths->action = actionprintpath;
-
-	printf("Visit paths!\n");
-
-	current_model->VisitPaths(current_model, visitPaths);*/
-
-	/*char *jsonModel = malloc(length);
-
-	if((fd_read = cfs_open(modelname, CFS_READ)) != -1)
-	{
-		int modelRead;
-
-		if((modelRead = cfs_read(fd_read, jsonModel, length)) != -1)
-		{
-			printf("Model loaded in RAM\n");*/
-	/*printf("%s", jsonModel);*/
-	/*}
-		else
-		{
-			printf("Empty model!\n");
-		}
-	}
-	else
-	{
-		printf("JSON model cannot be loaded\n");
-	}
-
-	struct jsonparse_state jsonState;
-
-	jsonparse_setup(&jsonState, jsonModel, length);
-
-	ContainerRoot *model2 = NULL;
-
-	model2 = JSONKevDeserializer(&jsonState, jsonparse_next(&jsonState));
-	visitor_print->action = actionprintf;
-	model2->Visit(model2, visitor_print);*/
-
-
-	/*buffer = malloc(length);
-
-	printf("%d", length);*/
 
 	/* Define application-specific events here. */
 
 
 	while(1) {
 		PROCESS_WAIT_EVENT();
-#if defined (PLATFORM_HAS_BUTTON)
-		if (ev == sensors_event && data == &button_sensor) {
-			PRINTF("BUTTON\n");
-#if REST_RES_EVENT
-			/* Call the event_handler for this application-specific event. */
-			event_event_handler(&resource_event);
-#endif
-#if REST_RES_SEPARATE && WITH_COAP>3
-			/* Also call the separate response example handler. */
-			separate_finalize_handler();
-#endif
-		}
-#endif /* PLATFORM_HAS_BUTTON */
 		/*if (ev == PROCESS_EVENT_TIMER) {
 			etimer_restart(&ledTimer);
 			leds_toggle(LEDS_RED);
