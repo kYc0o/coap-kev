@@ -198,13 +198,13 @@ static char *get_local_addresses(char *_buffer)
 	return buf;
 }
 
-void* malloc(size_t s)
+void* my_malloc(size_t s)
 {
 	mem_count += s;
 	return malloc(s);
 }
 
-void* calloc(size_t nmemb, size_t size)
+void* my_calloc(size_t nmemb, size_t size)
 {
 	mem_count += size;
 	return calloc(nmemb, size);
