@@ -2159,7 +2159,7 @@ PROCESS_THREAD(rest_server_example, ev, data)
 		length = 0;
 	}
 	visitor_print->action = actionprintpath;
-	current_model->Visit(current_model, visitor_print);
+	current_model->VisitPaths(current_model, visitor_print);
 
 
 	/* Define application-specific events here. */
