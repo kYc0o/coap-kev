@@ -198,13 +198,13 @@ static char *get_local_addresses(char *_buffer)
 	return buf;
 }
 
-void* my_malloc(size_t s)
+void* malloc(size_t s)
 {
 	mem_count += s;
 	return malloc(s);
 }
 
-void* my_calloc(size_t nmemb, size_t size)
+void* calloc(size_t nmemb, size_t size)
 {
 	mem_count += size;
 	return calloc(nmemb, size);
@@ -2158,6 +2158,8 @@ PROCESS_THREAD(rest_server_example, ev, data)
 		printf("Model created with length: %ld \n", length);
 		length = 0;
 	}
+	visitor_print->action = actionprintpath;
+	current_model->Visit(current_model, visitor_print);
 
 
 	/* Define application-specific events here. */
